@@ -1,457 +1,526 @@
-import { initializeApp } from "firebase/app";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
-import { getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc } from "firebase/firestore";
-import React, { useState, useEffect, useRef } from "react";
-
-const firebaseConfig = {
-    apiKey: "AIzaSyCtbA4ro1ZU429f9HTn29DHjVCpq4t-N-s",
-    authDomain: "kisok-a496b.firebaseapp.com",
-    projectId: "kisok-a496b",
-    storageBucket: "kisok-a496b.firebasestorage.app",
-    messagingSenderId: "850722698358",
-    appId: "1:850722698358:web:a1603cbb7aafccecebdb57",
-    measurementId: "G-E8KG84NDCQ"
-};
-
-const appId = "kisok-a496b";
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-
-export default function App() {
-    const [email, setEmail] = useState('default@eugeneevons.com');
-    const [password, setPassword] = useState('kiosk1');
-    const [error, setError] = useState('');
-    const [isLoading, setIsLoading] = useState(false);
-    const [user, setUser] = useState(null);
-
-    // Terminal State
-    const [nfcLog, setNfcLog] = useState([]);
-    const [isScanning, setIsScanning] = useState(false);
-    const [activeAction, setActiveAction] = useState(null); 
-    const [amount, setAmount] = useState('');
-    const [appliedVoucher, setAppliedVoucher] = useState(0);
-    const [customerEmail, setCustomerEmail] = useState('');
-    const [membershipDuration, setMembershipDuration] = useState('30');
-    const [actionResult, setActionResult] = useState(null); 
-    const [topUpMode, setTopUpMode] = useState('NORMAL'); 
-    const [transferState, setTransferState] = useState('AWAITING_SOURCE');
-    const [transferData, setTransferData] = useState(null);
-
-    // Slide to Delete State
-    const [slideProgress, setSlideProgress] = useState(0);
-    const [isDeleteConfirmed, setIsDeleteConfirmed] = useState(false);
-    const sliderRef = useRef(null);
-
-    // Action Refs for NFC Listener
-    const actionRef = useRef(null);
-    const amountRef = useRef(null);
-    const appliedVoucherRef = useRef(null);
-    const customerEmailRef = useRef(null);
-    const topUpModeRef = useRef(null);
-    const transferStateRef = useRef(null);
-    const transferDataRef = useRef(null);
-    const membershipDurationRef = useRef(null);
-    const isDeleteConfirmedRef = useRef(false);
-
-    useEffect(() => {
-        actionRef.current = activeAction;
-        amountRef.current = amount;
-        appliedVoucherRef.current = appliedVoucher;
-        customerEmailRef.current = customerEmail;
-        topUpModeRef.current = topUpMode;
-        transferStateRef.current = transferState;
-        transferDataRef.current = transferData;
-        membershipDurationRef.current = membershipDuration;
-        isDeleteConfirmedRef.current = isDeleteConfirmed;
-
-        if (!activeAction) {
-            setActionResult(null);
-            setAmount('');
-            setAppliedVoucher(0);
-            setCustomerEmail('');
-            setTopUpMode('NORMAL');
-            setTransferState('AWAITING_SOURCE');
-            setTransferData(null);
-            setMembershipDuration('30');
-            setSlideProgress(0);
-            setIsDeleteConfirmed(false);
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Power Studios Portal</title>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- Babel standalone for in-browser JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        .custom-scrollbar::-webkit-scrollbar { width: 3px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        @keyframes spin-slow {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
         }
-    }, [activeAction, amount, appliedVoucher, customerEmail, topUpMode, transferState, transferData, membershipDuration, isDeleteConfirmed]);
+        .animate-spin-slow { animation: spin-slow 8s linear infinite; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 antialiased selection:bg-blue-200">
+    <div id="root"></div>
 
-    useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-            setUser(currentUser);
-            if (currentUser) startNfcPersistentScanner();
-        });
-        return () => unsubscribe();
-    }, []);
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-    const addLog = (msg, type = 'info') => {
-        setNfcLog(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), msg, type }, ...prev]);
-    };
+        const { useState, useEffect, useRef } = React;
 
-    const startNfcPersistentScanner = async () => {
-        try {
-            if (!('NDEFReader' in window)) {
-                addLog('Web NFC not supported.', 'error');
-                return;
-            }
-            const ndef = new NDEFReader();
-            await ndef.scan();
-            setIsScanning(true);
-            addLog('System Online. Select an action.', 'success');
+        const firebaseConfig = {
+            apiKey: "AIzaSyCtbA4ro1ZU429f9HTn29DHjVCpq4t-N-s",
+            authDomain: "kisok-a496b.firebaseapp.com",
+            projectId: "kisok-a496b",
+            storageBucket: "kisok-a496b.firebasestorage.app",
+            messagingSenderId: "850722698358",
+            appId: "1:850722698358:web:a1603cbb7aafccecebdb57",
+            measurementId: "G-E8KG84NDCQ"
+        };
 
-            ndef.addEventListener("reading", async ({ serialNumber, message }) => {
-                const action = actionRef.current;
-                const currentAmount = parseFloat(amountRef.current);
-                const currentVoucher = appliedVoucherRef.current;
-                const currentEmail = customerEmailRef.current;
-                const currentTopUpMode = topUpModeRef.current;
-                const currentTransferState = transferStateRef.current;
-                const currentTransferData = transferDataRef.current;
-                const currentMemDuration = parseInt(membershipDurationRef.current);
-                const currentDeleteConfirmed = isDeleteConfirmedRef.current;
+        const appId = "kisok-a496b";
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
 
-                if (!action) return;
+        function App() {
+            const [email, setEmail] = useState('default@eugeneevons.com');
+            const [password, setPassword] = useState('kiosk1');
+            const [error, setError] = useState('');
+            const [isLoading, setIsLoading] = useState(false);
+            const [user, setUser] = useState(null);
 
-                // Handle Voucher Card Detection
-                let voucherValue = null;
-                for (const record of message.records) {
-                    if (record.recordType === "text") {
-                        const decoder = new TextDecoder(record.encoding);
-                        const data = decoder.decode(record.data);
-                        if (data.toUpperCase().startsWith("VOUCHER:")) {
-                            voucherValue = parseFloat(data.split(":")[1]);
-                        }
-                    }
+            // Terminal State
+            const [nfcLog, setNfcLog] = useState([]);
+            const [isScanning, setIsScanning] = useState(false);
+            const [activeAction, setActiveAction] = useState(null); 
+            const [amount, setAmount] = useState('');
+            const [appliedVoucher, setAppliedVoucher] = useState(0);
+            const [customerEmail, setCustomerEmail] = useState('');
+            const [membershipDuration, setMembershipDuration] = useState('30');
+            const [actionResult, setActionResult] = useState(null); 
+            const [topUpMode, setTopUpMode] = useState('NORMAL'); 
+            const [transferState, setTransferState] = useState('AWAITING_SOURCE');
+            const [transferData, setTransferData] = useState(null);
+
+            // Slide to Delete State
+            const [slideProgress, setSlideProgress] = useState(0);
+            const [isDeleteConfirmed, setIsDeleteConfirmed] = useState(false);
+
+            // Action Refs for NFC Listener
+            const actionRef = useRef(null);
+            const amountRef = useRef(null);
+            const appliedVoucherRef = useRef(null);
+            const customerEmailRef = useRef(null);
+            const topUpModeRef = useRef(null);
+            const transferStateRef = useRef(null);
+            const transferDataRef = useRef(null);
+            const membershipDurationRef = useRef(null);
+            const isDeleteConfirmedRef = useRef(false);
+
+            useEffect(() => {
+                actionRef.current = activeAction;
+                amountRef.current = amount;
+                appliedVoucherRef.current = appliedVoucher;
+                customerEmailRef.current = customerEmail;
+                topUpModeRef.current = topUpMode;
+                transferStateRef.current = transferState;
+                transferDataRef.current = transferData;
+                membershipDurationRef.current = membershipDuration;
+                isDeleteConfirmedRef.current = isDeleteConfirmed;
+
+                if (!activeAction) {
+                    setActionResult(null);
+                    setAmount('');
+                    setAppliedVoucher(0);
+                    setCustomerEmail('');
+                    setTopUpMode('NORMAL');
+                    setTransferState('AWAITING_SOURCE');
+                    setTransferData(null);
+                    setMembershipDuration('30');
+                    setSlideProgress(0);
+                    setIsDeleteConfirmed(false);
                 }
+            }, [activeAction, amount, appliedVoucher, customerEmail, topUpMode, transferState, transferData, membershipDuration, isDeleteConfirmed]);
 
-                if (action === 'PAY' && voucherValue !== null) {
-                    setAppliedVoucher(voucherValue);
-                    addLog(`Voucher Applied: -$${voucherValue.toFixed(2)}`, 'success');
-                    return;
-                }
+            useEffect(() => {
+                const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+                    setUser(currentUser);
+                    if (currentUser) startNfcPersistentScanner();
+                });
+                return () => unsubscribe();
+            }, []);
 
-                // If Action is DELETE, only proceed if "Slide to Delete" was completed
-                if (action === 'DELETE' && !currentDeleteConfirmed) {
-                    addLog("Warning: Slide to confirm deletion first.", "error");
-                    return;
-                }
+            const addLog = (msg, type = 'info') => {
+                setNfcLog(prev => [{ id: Date.now() + Math.random(), time: new Date().toLocaleTimeString(), msg, type }, ...prev]);
+            };
 
-                setActionResult({ status: 'processing', message: 'Processing NFC Tag...' });
-
+            const startNfcPersistentScanner = async () => {
                 try {
-                    const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', serialNumber);
-                    
-                    switch (action) {
-                        case 'BALANCE':
-                            const balSnap = await getDoc(tagRef);
-                            if (balSnap.exists()) {
-                                setActionResult({ status: 'success', type: 'balance', data: { ...balSnap.data(), serial: serialNumber } });
-                                addLog(`Checked: ${balSnap.data().customerEmail}`, 'success');
-                            } else throw new Error("Card not registered.");
-                            break;
-
-                        case 'REGISTER':
-                            if (!currentEmail) throw new Error("Enter customer email.");
-                            const intId = `PS-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-                            await ndef.write({ records: [{ recordType: "text", data: `ID: ${intId}` }, { recordType: "text", data: `Customer: ${currentEmail}` }] });
-                            await setDoc(tagRef, { balance: 0, loanBalance: 0, isMember: false, customerEmail: currentEmail, internalId: intId, registeredAt: new Date().toISOString() });
-                            setActionResult({ status: 'success', message: `Registered: ${currentEmail}` });
-                            break;
-
-                        case 'TOP_UP':
-                            if (isNaN(currentAmount) || currentAmount <= 0) throw new Error("Invalid amount.");
-                            const topSnap = await getDoc(tagRef);
-                            if (!topSnap.exists()) throw new Error("Card not registered.");
-                            let { balance: b, loanBalance: lb } = topSnap.data();
-                            if (currentTopUpMode === 'PAY_LOAN') {
-                                const pay = Math.min(currentAmount, lb || 0);
-                                lb -= pay;
-                                b += (currentAmount - pay);
-                            } else b += currentAmount;
-                            await updateDoc(tagRef, { balance: b, loanBalance: lb });
-                            setActionResult({ status: 'success', message: `Credit: $${b.toFixed(2)}, Debt: $${lb.toFixed(2)}` });
-                            break;
-                            
-                        case 'LOAN':
-                            const loanSnap = await getDoc(tagRef);
-                            if (!loanSnap.exists()) throw new Error("Card not registered.");
-                            const debt = (loanSnap.data().loanBalance || 0) + currentAmount;
-                            if (debt > 5) throw new Error("Loan limit $5.00 exceeded.");
-                            await updateDoc(tagRef, { balance: (loanSnap.data().balance || 0) + currentAmount, loanBalance: debt });
-                            setActionResult({ status: 'success', message: `Issued $${currentAmount.toFixed(2)}` });
-                            break;
-
-                        case 'PAY':
-                            const paySnap = await getDoc(tagRef);
-                            const charge = Math.max(0, currentAmount - currentVoucher);
-                            if (paySnap.data().balance < charge) throw new Error("Insufficient funds.");
-                            await updateDoc(tagRef, { balance: paySnap.data().balance - charge });
-                            setActionResult({ status: 'success', message: `Charged $${charge.toFixed(2)}` });
-                            break;
-
-                        case 'MEMBERSHIP':
-                            const mSnap = await getDoc(tagRef);
-                            let exp = mSnap.data().membershipExpiry ? new Date(mSnap.data().membershipExpiry) : new Date();
-                            if (exp < new Date()) exp = new Date();
-                            exp.setDate(exp.getDate() + currentMemDuration);
-                            await updateDoc(tagRef, { isMember: true, membershipExpiry: exp.toISOString() });
-                            setActionResult({ status: 'success', message: `VIP until ${exp.toLocaleDateString()}` });
-                            break;
-
-                        case 'TRANSFER':
-                            if (currentTransferState === 'AWAITING_SOURCE') {
-                                const sSnap = await getDoc(tagRef);
-                                if (!sSnap.exists()) throw new Error("Source card not registered.");
-                                await ndef.write({ records: [{ recordType: "text", data: "STATUS: ERASED" }] });
-                                setTransferData({ ...sSnap.data(), oldSerial: serialNumber });
-                                setTransferState('AWAITING_DESTINATION');
-                                setActionResult(null);
-                            } else {
-                                if (serialNumber === currentTransferData.oldSerial) throw new Error("Tap a DIFFERENT card.");
-                                const tid = `PS-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-                                await ndef.write({ records: [{ recordType: "text", data: `ID: ${tid}` }, { recordType: "text", data: `Customer: ${currentTransferData.customerEmail}` }] });
-                                await setDoc(tagRef, { ...currentTransferData, internalId: tid });
-                                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTransferData.oldSerial));
-                                setActionResult({ status: 'success', message: `Transfer Complete!` });
-                            }
-                            break;
-
-                        case 'DELETE':
-                            await deleteDoc(tagRef);
-                            setActionResult({ status: 'success', message: `Account record wiped.` });
-                            addLog(`Deleted: ${serialNumber}`, 'success');
-                            break;
+                    if (!('NDEFReader' in window)) {
+                        addLog('Web NFC not supported.', 'error');
+                        return;
                     }
-                } catch (err) {
-                    setActionResult({ status: 'error', message: err.message });
-                    addLog(`Error: ${err.message}`, 'error');
+                    const ndef = new NDEFReader();
+                    await ndef.scan();
+                    setIsScanning(true);
+                    addLog('System Online. Select an action.', 'success');
+
+                    ndef.addEventListener("reading", async ({ serialNumber, message }) => {
+                        const action = actionRef.current;
+                        const currentAmount = parseFloat(amountRef.current);
+                        const currentVoucher = appliedVoucherRef.current;
+                        const currentEmail = customerEmailRef.current;
+                        const currentTopUpMode = topUpModeRef.current;
+                        const currentTransferState = transferStateRef.current;
+                        const currentTransferData = transferDataRef.current;
+                        const currentMemDuration = parseInt(membershipDurationRef.current);
+                        const currentDeleteConfirmed = isDeleteConfirmedRef.current;
+
+                        if (!action) return;
+
+                        // Handle Voucher Card Detection
+                        let voucherValue = null;
+                        for (const record of message.records) {
+                            if (record.recordType === "text") {
+                                const decoder = new TextDecoder(record.encoding);
+                                const data = decoder.decode(record.data);
+                                if (data.toUpperCase().startsWith("VOUCHER:")) {
+                                    voucherValue = parseFloat(data.split(":")[1]);
+                                }
+                            }
+                        }
+
+                        if (action === 'PAY' && voucherValue !== null) {
+                            setAppliedVoucher(voucherValue);
+                            addLog(`Voucher Applied: -$${voucherValue.toFixed(2)}`, 'success');
+                            return;
+                        }
+
+                        // If Action is DELETE, only proceed if "Slide to Delete" was completed
+                        if (action === 'DELETE' && !currentDeleteConfirmed) {
+                            addLog("Warning: Slide to confirm deletion first.", "error");
+                            return;
+                        }
+
+                        setActionResult({ status: 'processing', message: 'Processing NFC Tag...' });
+
+                        try {
+                            const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', serialNumber);
+                            
+                            switch (action) {
+                                case 'BALANCE':
+                                    const balSnap = await getDoc(tagRef);
+                                    if (balSnap.exists()) {
+                                        setActionResult({ status: 'success', type: 'balance', data: { ...balSnap.data(), serial: serialNumber } });
+                                        addLog(`Checked: ${balSnap.data().customerEmail}`, 'success');
+                                    } else throw new Error("Card not registered.");
+                                    break;
+
+                                case 'REGISTER':
+                                    if (!currentEmail) throw new Error("Enter customer email.");
+                                    const intId = `PS-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+                                    await ndef.write({ records: [{ recordType: "text", data: `ID: ${intId}` }, { recordType: "text", data: `Customer: ${currentEmail}` }] });
+                                    await setDoc(tagRef, { balance: 0, loanBalance: 0, isMember: false, customerEmail: currentEmail, internalId: intId, registeredAt: new Date().toISOString() });
+                                    setActionResult({ status: 'success', message: `Registered: ${currentEmail}` });
+                                    break;
+
+                                case 'TOP_UP':
+                                    if (isNaN(currentAmount) || currentAmount <= 0) throw new Error("Invalid amount.");
+                                    const topSnap = await getDoc(tagRef);
+                                    if (!topSnap.exists()) throw new Error("Card not registered.");
+                                    let { balance: b, loanBalance: lb } = topSnap.data();
+                                    
+                                    if (currentTopUpMode === 'PAY_LOAN') {
+                                        const pay = Math.min(currentAmount, lb || 0);
+                                        lb -= pay;
+                                        b += (currentAmount - pay);
+                                    } else b += currentAmount;
+                                    
+                                    await updateDoc(tagRef, { balance: b, loanBalance: lb });
+                                    setActionResult({ status: 'success', message: `Credit: $${b.toFixed(2)}, Debt: $${lb.toFixed(2)}` });
+                                    break;
+                                    
+                                case 'LOAN':
+                                    const loanSnap = await getDoc(tagRef);
+                                    if (!loanSnap.exists()) throw new Error("Card not registered.");
+                                    const debt = (loanSnap.data().loanBalance || 0) + currentAmount;
+                                    if (debt > 5) throw new Error("Loan limit $5.00 exceeded.");
+                                    await updateDoc(tagRef, { balance: (loanSnap.data().balance || 0) + currentAmount, loanBalance: debt });
+                                    setActionResult({ status: 'success', message: `Issued $${currentAmount.toFixed(2)}` });
+                                    break;
+
+                                case 'PAY':
+                                    const paySnap = await getDoc(tagRef);
+                                    if (!paySnap.exists()) throw new Error("Card not registered.");
+                                    const charge = Math.max(0, currentAmount - currentVoucher);
+                                    if (paySnap.data().balance < charge) throw new Error("Insufficient funds.");
+                                    await updateDoc(tagRef, { balance: paySnap.data().balance - charge });
+                                    setActionResult({ status: 'success', message: `Charged $${charge.toFixed(2)}` });
+                                    break;
+
+                                case 'MEMBERSHIP':
+                                    const mSnap = await getDoc(tagRef);
+                                    if (!mSnap.exists()) throw new Error("Card not registered.");
+                                    let exp = mSnap.data().membershipExpiry ? new Date(mSnap.data().membershipExpiry) : new Date();
+                                    if (exp < new Date()) exp = new Date();
+                                    exp.setDate(exp.getDate() + currentMemDuration);
+                                    await updateDoc(tagRef, { isMember: true, membershipExpiry: exp.toISOString() });
+                                    setActionResult({ status: 'success', message: `VIP until ${exp.toLocaleDateString()}` });
+                                    break;
+
+                                case 'TRANSFER':
+                                    if (currentTransferState === 'AWAITING_SOURCE') {
+                                        const sSnap = await getDoc(tagRef);
+                                        if (!sSnap.exists()) throw new Error("Source card not registered.");
+                                        await ndef.write({ records: [{ recordType: "text", data: "STATUS: ERASED" }] });
+                                        setTransferData({ ...sSnap.data(), oldSerial: serialNumber });
+                                        setTransferState('AWAITING_DESTINATION');
+                                        setActionResult(null);
+                                    } else {
+                                        if (serialNumber === currentTransferData.oldSerial) throw new Error("Tap a DIFFERENT card.");
+                                        const tid = `PS-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+                                        await ndef.write({ records: [{ recordType: "text", data: `ID: ${tid}` }, { recordType: "text", data: `Customer: ${currentTransferData.customerEmail}` }] });
+                                        await setDoc(tagRef, { ...currentTransferData, internalId: tid });
+                                        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTransferData.oldSerial));
+                                        setActionResult({ status: 'success', message: `Transfer Complete!` });
+                                    }
+                                    break;
+
+                                case 'DELETE':
+                                    await deleteDoc(tagRef);
+                                    setActionResult({ status: 'success', message: `Account record wiped.` });
+                                    addLog(`Deleted: ${serialNumber}`, 'success');
+                                    break;
+                            }
+                        } catch (err) {
+                            setActionResult({ status: 'error', message: err.message });
+                            addLog(`Error: ${err.message}`, 'error');
+                        }
+                    });
+                } catch (err) { addLog(`NFC Init Error: ${err.message}`, 'error'); }
+            };
+
+            // Slider Logic
+            const handleSliderChange = (e) => {
+                const val = parseInt(e.target.value);
+                setSlideProgress(val);
+                if (val >= 95) {
+                    setIsDeleteConfirmed(true);
+                    setSlideProgress(100);
                 }
-            });
-        } catch (err) { addLog(`NFC Init Error: ${err.message}`, 'error'); }
-    };
+            };
 
-    // Slider Logic
-    const handleSliderChange = (e) => {
-        const val = parseInt(e.target.value);
-        setSlideProgress(val);
-        if (val >= 95) {
-            setIsDeleteConfirmed(true);
-            setSlideProgress(100);
-        }
-    };
+            const handleSliderRelease = () => {
+                if (slideProgress < 95) setSlideProgress(0);
+            };
 
-    const handleSliderRelease = () => {
-        if (slideProgress < 95) setSlideProgress(0);
-    };
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setError('');
+                setIsLoading(true);
+                try {
+                    await signInWithEmailAndPassword(auth, email, password);
+                } catch (err) { setError(`Login Failed: ${err.message}`); }
+                finally { setIsLoading(false); }
+            };
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setError('');
-        setIsLoading(true);
-        try {
-            await signInWithEmailAndPassword(auth, email, password);
-        } catch (err) { setError(`Login Failed: ${err.message}`); }
-        finally { setIsLoading(false); }
-    };
-
-    if (!user) return (
-        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
-            <div className="max-w-md w-full bg-white rounded-[3rem] shadow-2xl p-10 border border-slate-100">
-                <div className="text-center mb-10">
-                    <div className="mx-auto w-20 h-20 bg-blue-600 rounded-3xl flex items-center justify-center shadow-lg mb-6 rotate-3">
-                        <svg className="w-10 h-10 text-white -rotate-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                    </div>
-                    <h2 className="text-3xl font-black text-slate-900 tracking-tighter uppercase">Power Studios</h2>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.4em] mt-2">Kiosk Terminal Login</p>
-                </div>
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl font-bold" placeholder="Operator Email"/>
-                    <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl font-bold" placeholder="Password"/>
-                    {error && <p className="text-red-500 text-[10px] font-black uppercase text-center">{error}</p>}
-                    <button type="submit" disabled={isLoading} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-blue-700 transition-all active:scale-95">
-                        {isLoading ? 'Verifying...' : 'Unlock Terminal'}
-                    </button>
-                </form>
-            </div>
-        </div>
-    );
-
-    return (
-        <div className="min-h-screen bg-slate-50 p-4 lg:p-8 font-sans">
-            <div className="max-w-6xl mx-auto space-y-6">
-                {/* Header */}
-                <header className="bg-white rounded-3xl shadow-sm p-6 flex items-center justify-between border border-slate-200">
-                    <div className="flex items-center space-x-4">
-                        <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-md"><svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div>
-                        <div><h1 className="text-xl font-black text-slate-900 tracking-tight">Kiosk Terminal</h1><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{user.email}</p></div>
-                    </div>
-                    <button onClick={() => signOut(auth)} className="text-[10px] font-black text-slate-400 hover:text-red-500 uppercase tracking-widest transition-all">Logout</button>
-                </header>
-
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-2 space-y-6">
-                        {/* Action Selection */}
-                        <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-slate-200">
-                            <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-8">1. Choose Operation</h2>
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                                {[
-                                    {id: 'REGISTER', label: 'Register', color: 'blue', icon: 'M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z'},
-                                    {id: 'BALANCE', label: 'Balance', color: 'slate', icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z'},
-                                    {id: 'TOP_UP', label: 'Deposit', color: 'emerald', icon: 'M12 6v6m0 0v6m0-6h6m-6 0H6'},
-                                    {id: 'PAY', label: 'Sale', color: 'amber', icon: 'M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z'},
-                                    {id: 'LOAN', label: 'Loan', color: 'purple', icon: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4'},
-                                    {id: 'MEMBERSHIP', label: 'VIP', color: 'pink', icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z'},
-                                    {id: 'TRANSFER', label: 'Transfer', color: 'cyan', icon: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4'},
-                                    {id: 'DELETE', label: 'Wipe', color: 'red', icon: 'M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16'}
-                                ].map(btn => (
-                                    <button key={btn.id} onClick={() => { setActiveAction(btn.id); setActionResult(null); }} className={`p-4 rounded-2xl border-2 flex flex-col items-center justify-center transition-all ${activeAction === btn.id ? 'border-slate-900 bg-slate-50 ring-4 ring-slate-900/5' : 'border-slate-50 hover:border-slate-200 hover:bg-white'}`}>
-                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-2 ${activeAction === btn.id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-400'}`}><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d={btn.icon}/></svg></div>
-                                        <span className="text-[10px] font-black uppercase tracking-tighter text-slate-900">{btn.label}</span>
-                                    </button>
-                                ))}
+            if (!user) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+                        <div className="max-w-md w-full bg-white rounded-[3rem] shadow-2xl p-10 border border-slate-100">
+                            <div className="text-center mb-10">
+                                <div className="mx-auto w-20 h-20 bg-blue-600 rounded-3xl flex items-center justify-center shadow-lg mb-6 rotate-3">
+                                    <svg className="w-10 h-10 text-white -rotate-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                                </div>
+                                <h2 className="text-3xl font-black text-slate-900 tracking-tighter uppercase">Power Studios</h2>
+                                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.4em] mt-2">Kiosk Terminal Login</p>
                             </div>
+                            <form onSubmit={handleSubmit} className="space-y-4">
+                                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl font-bold" placeholder="Operator Email"/>
+                                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-6 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl font-bold" placeholder="Password"/>
+                                {error && <p className="text-red-500 text-[10px] font-black uppercase text-center">{error}</p>}
+                                <button type="submit" disabled={isLoading} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-blue-700 transition-all active:scale-95">
+                                    {isLoading ? 'Verifying...' : 'Unlock Terminal'}
+                                </button>
+                            </form>
                         </div>
+                    </div>
+                );
+            }
 
-                        {/* Config & Output */}
-                        {activeAction && (
-                            <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border-4 border-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                                <div className="flex items-center justify-between mb-8">
-                                    <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em]">2. Terminal Config</h2>
-                                    {!(activeAction === 'TRANSFER' && transferState === 'AWAITING_DESTINATION') && (
-                                        <button onClick={() => setActiveAction(null)} className="text-red-500 font-black text-[10px] uppercase">Cancel</button>
-                                    )}
+            return (
+                <div className="min-h-screen bg-slate-50 p-4 lg:p-8 font-sans">
+                    <div className="max-w-6xl mx-auto space-y-6">
+                        {/* Header */}
+                        <header className="bg-white rounded-3xl shadow-sm p-6 flex items-center justify-between border border-slate-200">
+                            <div className="flex items-center space-x-4">
+                                <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-md"><svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></div>
+                                <div><h1 className="text-xl font-black text-slate-900 tracking-tight">Kiosk Terminal</h1><p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{user.email}</p></div>
+                            </div>
+                            <button onClick={() => signOut(auth)} className="text-[10px] font-black text-slate-400 hover:text-red-500 uppercase tracking-widest transition-all">Logout</button>
+                        </header>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div className="lg:col-span-2 space-y-6">
+                                {/* Action Selection */}
+                                <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-slate-200">
+                                    <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-8">1. Choose Operation</h2>
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                                        {[
+                                            {id: 'REGISTER', label: 'Register', color: 'blue', icon: 'M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z'},
+                                            {id: 'BALANCE', label: 'Balance', color: 'slate', icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z'},
+                                            {id: 'TOP_UP', label: 'Deposit', color: 'emerald', icon: 'M12 6v6m0 0v6m0-6h6m-6 0H6'},
+                                            {id: 'PAY', label: 'Sale', color: 'amber', icon: 'M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z'},
+                                            {id: 'LOAN', label: 'Loan', color: 'purple', icon: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4'},
+                                            {id: 'MEMBERSHIP', label: 'VIP', color: 'pink', icon: 'M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z'},
+                                            {id: 'TRANSFER', label: 'Transfer', color: 'cyan', icon: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4'},
+                                            {id: 'DELETE', label: 'Wipe', color: 'red', icon: 'M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16'}
+                                        ].map(btn => (
+                                            <button key={btn.id} onClick={() => { setActiveAction(btn.id); setActionResult(null); }} className={`p-4 rounded-2xl border-2 flex flex-col items-center justify-center transition-all ${activeAction === btn.id ? 'border-slate-900 bg-slate-50 ring-4 ring-slate-900/5' : 'border-slate-50 hover:border-slate-200 hover:bg-white'}`}>
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-2 ${activeAction === btn.id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-400'}`}><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d={btn.icon}/></svg></div>
+                                                <span className="text-[10px] font-black uppercase tracking-tighter text-slate-900">{btn.label}</span>
+                                            </button>
+                                        ))}
+                                    </div>
                                 </div>
 
-                                {actionResult ? (
-                                    <div className="space-y-6">
-                                        {actionResult.status === 'error' ? (
-                                            <div className="bg-red-50 p-8 rounded-3xl text-center border-2 border-red-200"><p className="text-red-800 font-black uppercase text-xs tracking-widest mb-2">Failed</p><p className="text-red-600 font-bold">{actionResult.message}</p></div>
-                                        ) : actionResult.type === 'balance' ? (
-                                            <div className="bg-emerald-50 p-8 rounded-[2rem] text-center border-2 border-emerald-200">
-                                                <p className="text-6xl font-black text-emerald-800 mb-4">${actionResult.data.balance.toFixed(2)}</p>
-                                                <p className="text-xs font-bold text-slate-800">{actionResult.data.customerEmail}</p>
-                                                <div className="mt-4 flex flex-col space-y-2 items-center">
-                                                    {(actionResult.data.loanBalance || 0) > 0 && <span className="bg-red-100 px-4 py-2 rounded-xl text-red-600 text-xs font-black">OWES LOAN: ${actionResult.data.loanBalance.toFixed(2)}</span>}
-                                                    {actionResult.data.isMember && <span className="bg-pink-500 px-4 py-2 rounded-xl text-white text-xs font-black uppercase tracking-tighter">VIP: {new Date(actionResult.data.membershipExpiry).toLocaleDateString()}</span>}
-                                                </div>
+                                {/* Config & Output */}
+                                {activeAction && (
+                                    <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border-4 border-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                                        <div className="flex items-center justify-between mb-8">
+                                            <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em]">2. Terminal Config</h2>
+                                            {!(activeAction === 'TRANSFER' && transferState === 'AWAITING_DESTINATION') && (
+                                                <button onClick={() => setActiveAction(null)} className="text-red-500 font-black text-[10px] uppercase">Cancel</button>
+                                            )}
+                                        </div>
+
+                                        {actionResult ? (
+                                            <div className="space-y-6">
+                                                {actionResult.status === 'error' ? (
+                                                    <div className="bg-red-50 p-8 rounded-3xl text-center border-2 border-red-200"><p className="text-red-800 font-black uppercase text-xs tracking-widest mb-2">Failed</p><p className="text-red-600 font-bold">{actionResult.message}</p></div>
+                                                ) : actionResult.type === 'balance' ? (
+                                                    <div className="bg-emerald-50 p-8 rounded-[2rem] text-center border-2 border-emerald-200">
+                                                        <p className="text-6xl font-black text-emerald-800 mb-4">${actionResult.data.balance.toFixed(2)}</p>
+                                                        <p className="text-xs font-bold text-slate-800">{actionResult.data.customerEmail}</p>
+                                                        <div className="mt-4 flex flex-col space-y-2 items-center">
+                                                            {(actionResult.data.loanBalance || 0) > 0 && <span className="bg-red-100 px-4 py-2 rounded-xl text-red-600 text-xs font-black border border-red-200 shadow-sm w-full max-w-[240px]">OWES LOAN: ${(actionResult.data.loanBalance).toFixed(2)}</span>}
+                                                            {actionResult.data.isMember && new Date(actionResult.data.membershipExpiry) > new Date() && <span className="bg-pink-500 px-4 py-2 rounded-xl text-white text-xs font-black uppercase tracking-tighter shadow-sm w-full max-w-[240px]">VIP Expires: {new Date(actionResult.data.membershipExpiry).toLocaleDateString()}</span>}
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="bg-emerald-50 p-8 rounded-3xl text-center border-2 border-emerald-200"><p className="text-emerald-800 font-black uppercase text-xs tracking-widest mb-1">Success</p><p className="text-emerald-600 font-bold">{actionResult.message}</p></div>
+                                                )}
+                                                {actionResult.status !== 'processing' && <button onClick={() => setActionResult(null)} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase text-xs tracking-widest">OK</button>}
                                             </div>
                                         ) : (
-                                            <div className="bg-emerald-50 p-8 rounded-3xl text-center border-2 border-emerald-200"><p className="text-emerald-800 font-black uppercase text-xs tracking-widest mb-1">Success</p><p className="text-emerald-600 font-bold">{actionResult.message}</p></div>
-                                        )}
-                                        <button onClick={() => setActionResult(null)} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase text-xs tracking-widest">OK</button>
-                                    </div>
-                                ) : (
-                                    <div className="space-y-6">
-                                        {activeAction === 'REGISTER' && <input type="email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-5 font-bold outline-none" placeholder="customer@email.com" />}
-                                        
-                                        {(activeAction === 'TOP_UP' || activeAction === 'LOAN' || activeAction === 'PAY') && (
                                             <div className="space-y-6">
-                                                {activeAction === 'TOP_UP' && (
-                                                    <div className="flex bg-slate-100 p-1.5 rounded-2xl">
-                                                        <button onClick={() => setTopUpMode('NORMAL')} className={`flex-1 py-3 rounded-xl font-bold text-[10px] uppercase transition-all ${topUpMode === 'NORMAL' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}>Normal Credit</button>
-                                                        <button onClick={() => setTopUpMode('PAY_LOAN')} className={`flex-1 py-3 rounded-xl font-bold text-[10px] uppercase transition-all ${topUpMode === 'PAY_LOAN' ? 'bg-indigo-600 shadow-sm text-white' : 'text-slate-400'}`}>Pay Off Debt</button>
+                                                {/* Registration */}
+                                                {activeAction === 'REGISTER' && <input type="email" value={customerEmail} onChange={(e) => setCustomerEmail(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-6 py-5 font-bold outline-none focus:border-blue-500" placeholder="customer@email.com" />}
+                                                
+                                                {/* Top Up / Loan */}
+                                                {(activeAction === 'TOP_UP' || activeAction === 'LOAN') && (
+                                                    <div className="space-y-6">
+                                                        {activeAction === 'TOP_UP' && (
+                                                            <div className="flex bg-slate-100 p-1.5 rounded-2xl">
+                                                                <button onClick={() => setTopUpMode('NORMAL')} className={`flex-1 py-3 rounded-xl font-bold text-[10px] uppercase transition-all ${topUpMode === 'NORMAL' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400'}`}>Normal Credit</button>
+                                                                <button onClick={() => setTopUpMode('PAY_LOAN')} className={`flex-1 py-3 rounded-xl font-bold text-[10px] uppercase transition-all ${topUpMode === 'PAY_LOAN' ? 'bg-indigo-600 shadow-sm text-white' : 'text-slate-400'}`}>Pay Debt Only</button>
+                                                            </div>
+                                                        )}
+                                                        <div className="relative">
+                                                            <span className="absolute left-6 top-1/2 -translate-y-1/2 text-2xl font-black text-slate-300">$</span>
+                                                            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 rounded-3xl pl-12 pr-6 py-6 font-black text-4xl outline-none focus:border-blue-500 transition-all" placeholder="0.00" />
+                                                        </div>
                                                     </div>
                                                 )}
-                                                <div className="relative">
-                                                    <span className="absolute left-6 top-1/2 -translate-y-1/2 text-2xl font-black text-slate-300">$</span>
-                                                    <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 rounded-3xl pl-12 pr-6 py-6 font-black text-4xl outline-none" placeholder="0.00" />
-                                                </div>
-                                                {activeAction === 'PAY' && <div className="bg-emerald-50 border-2 border-dashed border-emerald-100 p-5 rounded-3xl flex justify-between items-center"><div><p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Active Voucher</p><p className="text-2xl font-black text-emerald-800">-${appliedVoucher.toFixed(2)}</p></div><div className="text-[10px] text-emerald-400 font-bold max-w-[120px] text-right">Tap Voucher Card to subtract.</div></div>}
-                                            </div>
-                                        )}
 
-                                        {activeAction === 'MEMBERSHIP' && (
-                                            <div className="grid grid-cols-3 gap-3">
-                                                {[30, 90, 365].map(d => <button key={d} onClick={() => setMembershipDuration(d.toString())} className={`py-4 rounded-2xl font-black text-xs uppercase ${membershipDuration === d.toString() ? 'bg-pink-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{d} Days</button>)}
-                                            </div>
-                                        )}
-
-                                        {activeAction === 'DELETE' && (
-                                            <div className="space-y-6">
-                                                <div className="bg-red-50 p-6 rounded-3xl border-2 border-dashed border-red-200 text-center">
-                                                    <p className="text-red-700 font-black uppercase text-xs tracking-widest mb-2">Destructive Action</p>
-                                                    <p className="text-[10px] text-red-500 font-bold">Slide fully to unlock physical card wipe.</p>
-                                                </div>
-                                                
-                                                <div className="relative bg-slate-100 h-16 rounded-3xl overflow-hidden shadow-inner group">
-                                                    <div 
-                                                        className="absolute inset-y-0 left-0 bg-red-600 flex items-center justify-end pr-4 transition-all"
-                                                        style={{ width: `${Math.max(15, slideProgress)}%` }}
-                                                    >
-                                                        {slideProgress > 20 && <svg className="w-6 h-6 text-white animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M13 5l7 7-7 7M5 5l7 7-7 7"/></svg>}
+                                                {/* Pay / Vouchers */}
+                                                {activeAction === 'PAY' && (
+                                                    <div className="space-y-6">
+                                                        <div className="relative">
+                                                            <span className="absolute left-6 top-1/2 -translate-y-1/2 text-2xl font-black text-slate-300">$</span>
+                                                            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 rounded-3xl pl-12 pr-6 py-6 font-black text-4xl outline-none focus:border-blue-500 transition-all" placeholder="0.00" />
+                                                        </div>
+                                                        <div className="bg-emerald-50 border-2 border-dashed border-emerald-100 p-5 rounded-3xl flex justify-between items-center">
+                                                            <div>
+                                                                <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">Active Voucher</p>
+                                                                <p className="text-2xl font-black text-emerald-800">-${appliedVoucher.toFixed(2)}</p>
+                                                            </div>
+                                                            <div className="text-[10px] text-emerald-400 font-bold max-w-[120px] text-right">Tap a Voucher Card to subtract.</div>
+                                                        </div>
+                                                        {amount && (
+                                                            <div className="text-right mt-2 pr-2">
+                                                                <span className="text-xs font-bold text-slate-500 uppercase tracking-widest mr-2">Final Charge: </span>
+                                                                <span className="text-slate-900 font-black text-2xl">
+                                                                    ${Math.max(0, parseFloat(amount) - (parseFloat(appliedVoucher) || 0)).toFixed(2)}
+                                                                </span>
+                                                            </div>
+                                                        )}
                                                     </div>
-                                                    
-                                                    <input 
-                                                        type="range" 
-                                                        min="0" 
-                                                        max="100" 
-                                                        value={slideProgress} 
-                                                        onChange={handleSliderChange}
-                                                        onMouseUp={handleSliderRelease}
-                                                        onTouchEnd={handleSliderRelease}
-                                                        disabled={isDeleteConfirmed}
-                                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                                                    />
-                                                    
-                                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                                        <span className={`text-[10px] font-black uppercase tracking-[0.2em] transition-opacity ${slideProgress > 50 ? 'opacity-0' : 'text-slate-400'}`}>
-                                                            {isDeleteConfirmed ? 'SYSTEM ARMED' : 'Slide to Confirm'}
-                                                        </span>
+                                                )}
+
+                                                {/* Membership */}
+                                                {activeAction === 'MEMBERSHIP' && (
+                                                    <div className="grid grid-cols-3 gap-3">
+                                                        {[30, 90, 365].map(d => <button key={d} onClick={() => setMembershipDuration(d.toString())} className={`py-4 rounded-2xl font-black text-xs uppercase ${membershipDuration === d.toString() ? 'bg-pink-500 text-white' : 'bg-slate-100 text-slate-400'}`}>{d} Days</button>)}
                                                     </div>
-                                                </div>
-                                            </div>
-                                        )}
+                                                )}
 
-                                        {activeAction === 'TRANSFER' && (
-                                            <div className="p-6 bg-cyan-50 border-2 border-dashed border-cyan-200 rounded-3xl text-center">
-                                                <p className="font-black text-cyan-800 uppercase text-xs">{transferState === 'AWAITING_SOURCE' ? '1. Erase Source' : '2. Write Target'}</p>
-                                                <p className="text-[10px] text-cyan-600 mt-2 font-bold">{transferState === 'AWAITING_SOURCE' ? 'Tap CURRENT card.' : 'Tap NEW card.'}</p>
-                                            </div>
-                                        )}
+                                                {/* Slide to Delete */}
+                                                {activeAction === 'DELETE' && (
+                                                    <div className="space-y-6">
+                                                        <div className="bg-red-50 p-6 rounded-3xl border-2 border-dashed border-red-200 text-center">
+                                                            <p className="text-red-700 font-black uppercase text-xs tracking-widest mb-2">Destructive Action</p>
+                                                            <p className="text-[10px] text-red-500 font-bold">Slide fully to unlock physical card wipe.</p>
+                                                        </div>
+                                                        
+                                                        <div className="relative bg-slate-100 h-16 rounded-3xl overflow-hidden shadow-inner group">
+                                                            <div 
+                                                                className="absolute inset-y-0 left-0 bg-red-600 flex items-center justify-end pr-4 transition-all"
+                                                                style={{ width: `${Math.max(15, slideProgress)}%` }}
+                                                            >
+                                                                {slideProgress > 20 && <svg className="w-6 h-6 text-white animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="4" d="M13 5l7 7-7 7M5 5l7 7-7 7"/></svg>}
+                                                            </div>
+                                                            
+                                                            <input 
+                                                                type="range" 
+                                                                min="0" 
+                                                                max="100" 
+                                                                value={slideProgress} 
+                                                                onChange={handleSliderChange}
+                                                                onMouseUp={handleSliderRelease}
+                                                                onTouchEnd={handleSliderRelease}
+                                                                disabled={isDeleteConfirmed}
+                                                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                                                            />
+                                                            
+                                                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                                <span className={`text-[10px] font-black uppercase tracking-[0.2em] transition-opacity ${slideProgress > 50 ? 'opacity-0' : 'text-slate-400'}`}>
+                                                                    {isDeleteConfirmed ? 'SYSTEM ARMED' : 'Slide to Confirm Wipe'}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                )}
 
-                                        {/* Scanner Prompt */}
-                                        {(activeAction !== 'DELETE' || isDeleteConfirmed) && (
-                                            <div className="mt-8 p-6 bg-slate-900 rounded-[2rem] text-white flex items-center justify-between shadow-2xl ring-4 ring-slate-900/10">
-                                                <div className="flex items-center space-x-4">
-                                                    <div className="w-10 h-10 rounded-full border-2 border-dashed border-white/30 flex items-center justify-center animate-spin-slow"><svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg></div>
-                                                    <div><p className="font-black uppercase text-[10px] tracking-widest text-white/50">{activeAction === 'DELETE' ? 'ARMED & READY' : 'Scanner Active'}</p><p className="text-xs font-bold uppercase">Tap Physical Card Now</p></div>
-                                                </div>
-                                                <div className={`h-2 w-2 rounded-full animate-pulse ${activeAction === 'DELETE' ? 'bg-red-500' : 'bg-emerald-400'}`}></div>
+                                                {/* Transfer Setup */}
+                                                {activeAction === 'TRANSFER' && (
+                                                    <div className="p-6 bg-cyan-50 border-2 border-dashed border-cyan-200 rounded-3xl text-center">
+                                                        <p className="font-black text-cyan-800 uppercase text-xs">{transferState === 'AWAITING_SOURCE' ? '1. Erase Source' : '2. Write Target'}</p>
+                                                        <p className="text-[10px] text-cyan-600 mt-2 font-bold">{transferState === 'AWAITING_SOURCE' ? 'Tap CURRENT card.' : 'Tap NEW card.'}</p>
+                                                    </div>
+                                                )}
+
+                                                {/* Scanner Prompt */}
+                                                {(activeAction !== 'DELETE' || isDeleteConfirmed) && (
+                                                    <div className={`mt-8 p-6 rounded-[2rem] text-white flex items-center justify-between shadow-2xl ring-4 ${activeAction === 'DELETE' ? 'bg-red-600 ring-red-600/20' : 'bg-slate-900 ring-slate-900/10'}`}>
+                                                        <div className="flex items-center space-x-4">
+                                                            <div className="w-10 h-10 rounded-full border-2 border-dashed border-white/30 flex items-center justify-center animate-spin-slow"><svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg></div>
+                                                            <div>
+                                                                <p className="font-black uppercase text-[10px] tracking-widest text-white/50">{activeAction === 'DELETE' ? 'ARMED & READY' : 'Scanner Active'}</p>
+                                                                <p className="text-xs font-bold uppercase">{activeAction === 'PAY' ? 'Tap Card / Voucher' : 'Tap Physical Card'}</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className={`h-2 w-2 rounded-full animate-pulse ${activeAction === 'DELETE' ? 'bg-white' : 'bg-emerald-400'}`}></div>
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
                                     </div>
                                 )}
                             </div>
-                        )}
-                    </div>
 
-                    {/* Logs */}
-                    <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl p-8 border border-slate-800 flex flex-col h-[600px] lg:h-auto overflow-hidden">
-                        <h3 className="text-xs font-black text-slate-500 uppercase tracking-[0.3em] mb-8">Activity Feed</h3>
-                        <div className="flex-1 overflow-y-auto space-y-6 pr-2 custom-scrollbar">
-                            {nfcLog.map((log) => (
-                                <div key={log.id} className="group relative">
-                                    <div className="flex items-center space-x-3 mb-2"><span className="text-slate-600 font-mono text-[10px]">{log.time}</span><div className="h-[1px] flex-1 bg-slate-800"></div><span className={`px-2 py-0.5 rounded-sm text-[8px] font-black uppercase tracking-tighter ${log.type === 'error' ? 'bg-red-500 text-white' : log.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-blue-600 text-white'}`}>{log.type}</span></div>
-                                    <p className="text-slate-200 text-xs font-semibold pl-4 border-l border-slate-800 break-words leading-relaxed">{log.msg}</p>
+                            {/* Logs */}
+                            <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl p-8 border border-slate-800 flex flex-col h-[600px] lg:h-auto overflow-hidden">
+                                <h3 className="text-xs font-black text-slate-500 uppercase tracking-[0.3em] mb-8">Activity Feed</h3>
+                                <div className="flex-1 overflow-y-auto space-y-6 pr-2 custom-scrollbar">
+                                    {nfcLog.map((log) => (
+                                        <div key={log.id} className="group relative">
+                                            <div className="flex items-center space-x-3 mb-2"><span className="text-slate-600 font-mono text-[10px]">{log.time}</span><div className="h-[1px] flex-1 bg-slate-800"></div><span className={`px-2 py-0.5 rounded-sm text-[8px] font-black uppercase tracking-tighter ${log.type === 'error' ? 'bg-red-500 text-white' : log.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-blue-600 text-white'}`}>{log.type}</span></div>
+                                            <p className="text-slate-200 text-xs font-semibold pl-4 border-l border-slate-800 break-words leading-relaxed">{log.msg}</p>
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
+                                <button onClick={() => setNfcLog([])} className="mt-6 py-2 text-[10px] font-black uppercase tracking-widest text-slate-600 hover:text-white transition-all border-t border-slate-800 pt-6">Clear History</button>
+                            </div>
                         </div>
-                        <button onClick={() => setNfcLog([])} className="mt-6 py-2 text-[10px] font-black uppercase tracking-widest text-slate-600 hover:text-white transition-all border-t border-slate-800 pt-6">Clear History</button>
                     </div>
                 </div>
-            </div>
-            
-            <style>{`
-                .custom-scrollbar::-webkit-scrollbar { width: 3px; }
-                .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-                .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
-                @keyframes spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-                .animate-spin-slow { animation: spin-slow 8s linear infinite; }
-            `}</style>
-        </div>
-    );
-}
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
 
