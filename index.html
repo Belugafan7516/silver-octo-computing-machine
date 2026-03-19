@@ -52,6 +52,7 @@
             const [isScanning, setIsScanning] = useState(false);
             const [currentTagSerial, setCurrentTagSerial] = useState(null);
             const [tagData, setTagData] = useState(null);
+            const [isWalletLoading, setIsWalletLoading] = useState(false);
             
             // Inputs
             const [amount, setAmount] = useState('');
@@ -60,14 +61,16 @@
             // Confirmation State (The "Re-tap" Logic)
             const [pendingAction, setPendingAction] = useState(null); 
 
-            // Refs for event listeners
+            // Refs for event listeners to avoid stale closure issues
             const serialRef = useRef(null);
             const pendingRef = useRef(null);
+            const tagDataRef = useRef(null);
 
             useEffect(() => {
                 serialRef.current = currentTagSerial;
                 pendingRef.current = pendingAction;
-            }, [currentTagSerial, pendingAction]);
+                tagDataRef.current = tagData;
+            }, [currentTagSerial, pendingAction, tagData]);
 
             useEffect(() => {
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -77,12 +80,19 @@
             }, []);
 
             useEffect(() => {
-                if (!user || !currentTagSerial || !db) return;
+                if (!user || !currentTagSerial || !db) {
+                    setTagData(null);
+                    return;
+                }
+                
+                setIsWalletLoading(true);
                 const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                 const unsubscribe = onSnapshot(tagRef, (docSnap) => {
                     setTagData(docSnap.exists() ? docSnap.data() : null);
+                    setIsWalletLoading(false);
                 }, (err) => {
                     addLog(`Firestore Error: ${err.message}`, 'error');
+                    setIsWalletLoading(false);
                 });
                 return () => unsubscribe();
             }, [user, currentTagSerial]);
@@ -107,7 +117,7 @@
             const startNfcScan = async () => {
                 try {
                     if (!('NDEFReader' in window)) {
-                        addLog('Web NFC not supported.', 'error');
+                        addLog('Web NFC not supported on this device.', 'error');
                         return;
                     }
                     const ndef = new NDEFReader();
@@ -120,8 +130,10 @@
                         const action = pendingRef.current;
 
                         if (action) {
-                            if (serialNumber !== activeSerial && action.type !== 'REGISTER') {
-                                addLog(`Wrong card! Expected ${activeSerial}, got ${serialNumber}`, 'error');
+                            // Guard: Action requires the correct card unless it's a new registration
+                            if (action.type !== 'REGISTER' && serialNumber !== activeSerial) {
+                                addLog(`Action Cancelled: Wrong card tapped.`, 'error');
+                                setPendingAction(null);
                                 return;
                             }
                             try {
@@ -129,6 +141,7 @@
                                 setPendingAction(null);
                             } catch (err) {
                                 addLog(`Action failed: ${err.message}`, 'error');
+                                setPendingAction(null);
                             }
                             return;
                         }
@@ -138,9 +151,11 @@
                         
                         for (const record of message.records) {
                             if (record.recordType === "text") {
-                                const textDecoder = new TextDecoder(record.encoding);
-                                const data = textDecoder.decode(record.data);
-                                if (data.includes("Customer:")) addLog(`Card Info: ${data}`, 'info');
+                                try {
+                                    const textDecoder = new TextDecoder(record.encoding);
+                                    const data = textDecoder.decode(record.data);
+                                    if (data.includes("Customer:")) addLog(`Card Info: ${data}`, 'info');
+                                } catch (e) {}
                             }
                         }
                     });
@@ -151,19 +166,19 @@
             };
 
             const executePendingAction = async (serial, action, ndef) => {
+                if (!serial || !action) return;
                 const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', serial);
+                const currentData = tagDataRef.current;
 
                 switch (action.type) {
                     case 'REGISTER':
                         const internalId = `PS-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
-                        // Physically write customer data to the tag
                         await ndef.write({
                             records: [
                                 { recordType: "text", data: `ID: ${internalId}` },
                                 { recordType: "text", data: `Customer: ${action.email}` }
                             ]
                         });
-                        // Create customer wallet in Firestore
                         await setDoc(tagRef, { 
                             balance: 0, 
                             customerEmail: action.email,
@@ -175,14 +190,18 @@
                         break;
 
                     case 'TOP_UP':
-                        await updateDoc(tagRef, { balance: tagData.balance + action.amount });
-                        addLog(`Success: Added $${action.amount.toFixed(2)} to wallet`, 'success');
+                        if (!currentData) throw new Error("Wallet data not loaded.");
+                        await updateDoc(tagRef, { balance: (currentData.balance || 0) + action.amount });
+                        addLog(`Success: Added $${action.amount.toFixed(2)}`, 'success');
                         setAmount('');
                         break;
 
                     case 'PAY':
-                        await updateDoc(tagRef, { balance: tagData.balance - action.amount });
-                        addLog(`Success: Charged customer $${action.amount.toFixed(2)}`, 'success');
+                        if (!currentData) throw new Error("Wallet data not loaded.");
+                        const currentBalance = currentData.balance || 0;
+                        if (currentBalance < action.amount) throw new Error("Insufficient credit.");
+                        await updateDoc(tagRef, { balance: currentBalance - action.amount });
+                        addLog(`Success: Charged $${action.amount.toFixed(2)}`, 'success');
                         setAmount('');
                         break;
 
@@ -198,12 +217,13 @@
             const initiateRegister = () => {
                 if (!customerEmail) return addLog('Customer email is required.', 'error');
                 setPendingAction({ type: 'REGISTER', email: customerEmail });
-                addLog('CONFIRM: Re-tap card to link customer and write ID.', 'info');
+                addLog('CONFIRM: Re-tap card to link customer.', 'info');
             };
 
             const initiateTopUp = () => {
                 const val = parseFloat(amount);
                 if (isNaN(val) || val <= 0) return addLog('Invalid amount.', 'error');
+                if (!tagData) return addLog('No wallet data found for this card.', 'error');
                 setPendingAction({ type: 'TOP_UP', amount: val });
                 addLog(`CONFIRM: Re-tap card to add $${val.toFixed(2)}.`, 'info');
             };
@@ -211,14 +231,15 @@
             const initiatePay = () => {
                 const val = parseFloat(amount);
                 if (isNaN(val) || val <= 0) return addLog('Invalid amount.', 'error');
-                if (tagData.balance < val) return addLog('Insufficient credit.', 'error');
+                if (!tagData) return addLog('No wallet data found.', 'error');
+                if ((tagData.balance || 0) < val) return addLog('Insufficient credit.', 'error');
                 setPendingAction({ type: 'PAY', amount: val });
                 addLog(`CONFIRM: Re-tap card to charge $${val.toFixed(2)}.`, 'info');
             };
 
             const initiateDelete = () => {
                 setPendingAction({ type: 'DELETE' });
-                addLog('CONFIRM: Re-tap card to wipe customer data.', 'error');
+                addLog('CONFIRM: Re-tap card to wipe data.', 'error');
             };
 
             if (user) {
@@ -233,7 +254,7 @@
                                     </div>
                                     <div>
                                         <h2 className="text-xl font-black text-slate-900 tracking-tight">Kiosk Terminal</h2>
-                                        <p className="text-xs text-slate-400 font-mono">Operator: {user.email}</p>
+                                        <p className="text-xs text-slate-400 font-mono">{user.email}</p>
                                     </div>
                                 </div>
                                 <button onClick={() => signOut(auth)} className="text-xs font-bold text-slate-400 hover:text-red-500 uppercase tracking-widest transition-colors">Log Out</button>
@@ -290,7 +311,13 @@
                                     {/* Wallet Management */}
                                     <div className="bg-white rounded-[2rem] shadow-sm p-8 border border-slate-200">
                                         <h3 className="font-black text-slate-800 uppercase text-xs tracking-[0.2em] mb-6">2. Transaction Desk</h3>
-                                        {!currentTagSerial ? (
+                                        
+                                        {isWalletLoading ? (
+                                            <div className="text-center py-16 animate-pulse">
+                                                <div className="w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4"></div>
+                                                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Loading Wallet...</p>
+                                            </div>
+                                        ) : !currentTagSerial ? (
                                             <div className="text-center py-16">
                                                 <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
                                                     <svg className="w-8 h-8 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
