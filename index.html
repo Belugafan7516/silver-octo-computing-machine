@@ -55,13 +55,12 @@
             
             // Inputs
             const [amount, setAmount] = useState('');
-            const [ownerEmail, setOwnerEmail] = useState('');
+            const [customerEmail, setCustomerEmail] = useState('');
 
             // Confirmation State (The "Re-tap" Logic)
             const [pendingAction, setPendingAction] = useState(null); 
-            // { type: 'REGISTER' | 'TOP_UP' | 'PAY' | 'DELETE', value: any }
 
-            // Ref to keep track of currentTagSerial for the NDEF event listener
+            // Refs for event listeners
             const serialRef = useRef(null);
             const pendingRef = useRef(null);
 
@@ -114,19 +113,17 @@
                     const ndef = new NDEFReader();
                     await ndef.scan();
                     setIsScanning(true);
-                    addLog('Scanner Active. Tap your tag to identify or confirm action.', 'info');
+                    addLog('Scanner Active. Tap a tag to view or confirm.', 'info');
 
                     ndef.addEventListener("reading", async ({ serialNumber, message }) => {
                         const activeSerial = serialRef.current;
                         const action = pendingRef.current;
 
-                        // 1. If we are waiting for a RE-TAP to confirm an action
                         if (action) {
                             if (serialNumber !== activeSerial && action.type !== 'REGISTER') {
                                 addLog(`Wrong card! Expected ${activeSerial}, got ${serialNumber}`, 'error');
                                 return;
                             }
-
                             try {
                                 await executePendingAction(serialNumber, action, ndef);
                                 setPendingAction(null);
@@ -136,16 +133,14 @@
                             return;
                         }
 
-                        // 2. Otherwise, this is a standard identification tap
                         setCurrentTagSerial(serialNumber);
                         addLog(`Tag detected: ${serialNumber}`, 'success');
                         
-                        // Parse existing records if any
                         for (const record of message.records) {
                             if (record.recordType === "text") {
                                 const textDecoder = new TextDecoder(record.encoding);
                                 const data = textDecoder.decode(record.data);
-                                if (data.includes("Owner:")) addLog(`Card Record: ${data}`, 'info');
+                                if (data.includes("Customer:")) addLog(`Card Info: ${data}`, 'info');
                             }
                         }
                     });
@@ -161,70 +156,69 @@
                 switch (action.type) {
                     case 'REGISTER':
                         const internalId = `PS-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
-                        // Physically write to the card
+                        // Physically write customer data to the tag
                         await ndef.write({
                             records: [
                                 { recordType: "text", data: `ID: ${internalId}` },
-                                { recordType: "text", data: `Owner: ${action.email}` }
+                                { recordType: "text", data: `Customer: ${action.email}` }
                             ]
                         });
-                        // Save to Firestore
+                        // Create customer wallet in Firestore
                         await setDoc(tagRef, { 
                             balance: 0, 
-                            ownerEmail: action.email,
+                            customerEmail: action.email,
                             internalId: internalId,
                             registeredAt: new Date().toISOString()
                         });
-                        addLog(`Successfully Registered & Written to Tag!`, 'success');
-                        setOwnerEmail('');
+                        addLog(`Success: Registered Customer ${action.email}`, 'success');
+                        setCustomerEmail('');
                         break;
 
                     case 'TOP_UP':
                         await updateDoc(tagRef, { balance: tagData.balance + action.amount });
-                        addLog(`Confirmed: Added $${action.amount.toFixed(2)}`, 'success');
+                        addLog(`Success: Added $${action.amount.toFixed(2)} to wallet`, 'success');
                         setAmount('');
                         break;
 
                     case 'PAY':
                         await updateDoc(tagRef, { balance: tagData.balance - action.amount });
-                        addLog(`Confirmed: Charged $${action.amount.toFixed(2)}`, 'success');
+                        addLog(`Success: Charged customer $${action.amount.toFixed(2)}`, 'success');
                         setAmount('');
                         break;
 
                     case 'DELETE':
                         await deleteDoc(tagRef);
-                        addLog(`Confirmed: Tag data wiped.`, 'success');
+                        addLog(`Success: Customer record deleted.`, 'success');
                         setCurrentTagSerial(null);
                         setTagData(null);
                         break;
                 }
             };
 
-            // UI Triggers for Pending Actions
             const initiateRegister = () => {
-                if (!ownerEmail) return addLog('Owner email required.', 'error');
-                setPendingAction({ type: 'REGISTER', email: ownerEmail });
-                addLog('PENDING: Re-tap the card to WRITE owner data and REGISTER.', 'info');
+                if (!customerEmail) return addLog('Customer email is required.', 'error');
+                setPendingAction({ type: 'REGISTER', email: customerEmail });
+                addLog('CONFIRM: Re-tap card to link customer and write ID.', 'info');
             };
 
             const initiateTopUp = () => {
                 const val = parseFloat(amount);
                 if (isNaN(val) || val <= 0) return addLog('Invalid amount.', 'error');
                 setPendingAction({ type: 'TOP_UP', amount: val });
-                addLog(`PENDING: Re-tap card to ADD $${val.toFixed(2)}.`, 'info');
+                addLog(`CONFIRM: Re-tap card to add $${val.toFixed(2)}.`, 'info');
             };
 
             const initiatePay = () => {
                 const val = parseFloat(amount);
                 if (isNaN(val) || val <= 0) return addLog('Invalid amount.', 'error');
-                if (tagData.balance < val) return addLog('Insufficient funds.', 'error');
+                if (tagData.balance < val) return addLog('Insufficient credit.', 'error');
                 setPendingAction({ type: 'PAY', amount: val });
-                addLog(`PENDING: Re-tap card to DEDUCT $${val.toFixed(2)}.`, 'info');
+                addLog(`CONFIRM: Re-tap card to charge $${val.toFixed(2)}.`, 'info');
             };
 
             const initiateDelete = () => {
                 setPendingAction({ type: 'DELETE' });
-                addLog('PENDING: Re-tap card to PERMANENTLY DELETE from system.', 'error');
+                addLog('CONFIRM: Re-tap card to wipe customer data.', 'error');
             };
 
             if (user) {
@@ -238,128 +232,154 @@
                                         <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                                     </div>
                                     <div>
-                                        <h2 className="text-xl font-black text-slate-900">Power Studios</h2>
-                                        <p className="text-xs text-slate-400 font-mono">{user.email}</p>
+                                        <h2 className="text-xl font-black text-slate-900 tracking-tight">Kiosk Terminal</h2>
+                                        <p className="text-xs text-slate-400 font-mono">Operator: {user.email}</p>
                                     </div>
                                 </div>
-                                <button onClick={() => signOut(auth)} className="text-xs font-bold text-slate-400 hover:text-red-500 uppercase tracking-widest transition-colors">Sign Out</button>
+                                <button onClick={() => signOut(auth)} className="text-xs font-bold text-slate-400 hover:text-red-500 uppercase tracking-widest transition-colors">Log Out</button>
                             </div>
 
-                            {/* Status Banner for Pending Actions */}
+                            {/* Pending Handshake Banner */}
                             {pendingAction && (
-                                <div className="bg-blue-600 text-white p-4 rounded-2xl shadow-xl flex items-center justify-between animate-pulse">
-                                    <div className="flex items-center space-x-3">
-                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                <div className="bg-blue-600 text-white p-5 rounded-3xl shadow-2xl flex items-center justify-between animate-pulse ring-4 ring-blue-600/20">
+                                    <div className="flex items-center space-x-4">
+                                        <div className="bg-white/20 p-2 rounded-lg">
+                                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                        </div>
                                         <div>
-                                            <p className="font-black uppercase text-xs tracking-tighter">Action Required</p>
-                                            <p className="text-sm font-medium">Re-tap card to confirm {pendingAction.type.replace('_',' ')}</p>
+                                            <p className="font-black uppercase text-[10px] tracking-widest opacity-80">Physical Confirmation</p>
+                                            <p className="text-lg font-bold">Tap card to finalize {pendingAction.type}</p>
                                         </div>
                                     </div>
-                                    <button onClick={() => setPendingAction(null)} className="text-xs bg-white/20 px-3 py-1 rounded-full font-bold">Cancel</button>
+                                    <button onClick={() => setPendingAction(null)} className="text-xs bg-black/20 hover:bg-black/40 px-4 py-2 rounded-full font-bold transition-all">Cancel</button>
                                 </div>
                             )}
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div className="space-y-6">
-                                    {/* NFC Reader Card */}
-                                    <div className="bg-white rounded-3xl shadow-sm p-6 border border-slate-200">
+                                    {/* NFC Reader */}
+                                    <div className="bg-white rounded-[2rem] shadow-sm p-8 border border-slate-200">
                                         <div className="flex items-center justify-between mb-6">
-                                            <h3 className="font-black text-slate-800 uppercase tracking-tight">1. NFC Interface</h3>
-                                            <div className={`h-2 w-2 rounded-full ${isScanning ? 'bg-green-500 animate-ping' : 'bg-slate-300'}`}></div>
+                                            <h3 className="font-black text-slate-800 uppercase text-xs tracking-[0.2em]">1. Customer Card</h3>
+                                            <span className={`px-2 py-1 rounded text-[8px] font-black uppercase ${isScanning ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                                                {isScanning ? 'Scanner Live' : 'Offline'}
+                                            </span>
                                         </div>
                                         <button 
                                             onClick={startNfcScan}
                                             disabled={isScanning}
-                                            className={`w-full py-4 rounded-2xl font-black text-white transition-all shadow-md active:scale-95 ${isScanning ? 'bg-slate-100 text-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                            className={`w-full py-5 rounded-2xl font-black text-white transition-all shadow-md active:scale-95 ${isScanning ? 'bg-slate-50 text-slate-300' : 'bg-blue-600 hover:bg-blue-700'}`}
                                         >
-                                            {isScanning ? 'Scanner Active' : 'Start Scanner'}
+                                            {isScanning ? 'Waiting for Card...' : 'Activate NFC Scanner'}
                                         </button>
                                         {currentTagSerial && (
-                                            <div className="mt-4 p-4 bg-slate-50 border border-slate-100 rounded-2xl flex items-center justify-between">
-                                                <div>
-                                                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Selected Tag</p>
-                                                    <p className="text-sm font-mono font-bold text-slate-600">{currentTagSerial}</p>
+                                            <div className="mt-6 p-4 bg-slate-50 border border-slate-100 rounded-2xl">
+                                                <div className="flex justify-between items-center">
+                                                    <div>
+                                                        <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">Hardware ID</p>
+                                                        <p className="text-sm font-mono font-bold text-slate-700">{currentTagSerial}</p>
+                                                    </div>
+                                                    <button onClick={() => {setCurrentTagSerial(null); setTagData(null);}} className="p-2 text-red-400 hover:bg-red-50 rounded-lg transition-all">
+                                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                                    </button>
                                                 </div>
-                                                <button onClick={() => {setCurrentTagSerial(null); setTagData(null);}} className="text-xs text-red-400 font-bold">Clear</button>
                                             </div>
                                         )}
                                     </div>
 
-                                    {/* Wallet Details */}
-                                    <div className="bg-white rounded-3xl shadow-sm p-6 border border-slate-200">
-                                        <h3 className="font-black text-slate-800 uppercase tracking-tight mb-6">2. Wallet Operations</h3>
+                                    {/* Wallet Management */}
+                                    <div className="bg-white rounded-[2rem] shadow-sm p-8 border border-slate-200">
+                                        <h3 className="font-black text-slate-800 uppercase text-xs tracking-[0.2em] mb-6">2. Transaction Desk</h3>
                                         {!currentTagSerial ? (
-                                            <div className="text-center py-10 opacity-30">
-                                                <svg className="w-12 h-12 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z"/></svg>
-                                                <p className="text-sm font-bold">No Tag Identified</p>
+                                            <div className="text-center py-16">
+                                                <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                                                    <svg className="w-8 h-8 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+                                                </div>
+                                                <p className="text-sm font-bold text-slate-300">Awaiting Customer Card</p>
                                             </div>
                                         ) : !tagData ? (
                                             <div className="space-y-4">
-                                                <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl">
-                                                    <p className="text-xs font-bold text-amber-700 uppercase mb-1 tracking-tighter">Registration Required</p>
-                                                    <input 
-                                                        type="email" 
-                                                        value={ownerEmail}
-                                                        onChange={(e) => setOwnerEmail(e.target.value)}
-                                                        placeholder="Owner's Corporate Email"
-                                                        className="w-full bg-white border border-amber-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-amber-500 outline-none font-semibold transition-all"
-                                                    />
+                                                <div className="bg-amber-50 border-2 border-dashed border-amber-200 p-6 rounded-3xl text-center">
+                                                    <p className="text-sm font-black text-amber-800 uppercase mb-4 tracking-tighter">New Customer detected</p>
+                                                    <div className="relative">
+                                                        <input 
+                                                            type="email" 
+                                                            value={customerEmail}
+                                                            onChange={(e) => setCustomerEmail(e.target.value)}
+                                                            placeholder="Customer Personal Email"
+                                                            className="w-full bg-white border border-amber-200 rounded-2xl px-5 py-4 text-sm font-bold shadow-sm focus:ring-4 focus:ring-amber-500/10 outline-none transition-all"
+                                                        />
+                                                    </div>
                                                 </div>
-                                                <button onClick={initiateRegister} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black shadow-lg shadow-slate-200 hover:bg-black transition-all active:scale-95">
-                                                    Initialize & Write to Card
+                                                <button onClick={initiateRegister} className="w-full py-5 bg-slate-900 text-white rounded-2xl font-black shadow-xl hover:bg-black transition-all active:scale-95">
+                                                    Register Customer Card
                                                 </button>
                                             </div>
                                         ) : (
                                             <div className="space-y-6">
-                                                <div className="bg-emerald-50 border-2 border-emerald-100 p-6 rounded-3xl text-center shadow-inner">
-                                                    <p className="text-[10px] text-emerald-600 font-black uppercase tracking-[0.2em] mb-1">Live Credit Balance</p>
-                                                    <p className="text-5xl font-black text-emerald-800">${(tagData.balance || 0).toFixed(2)}</p>
-                                                    <p className="text-[10px] text-emerald-600/60 font-mono mt-2">{tagData.ownerEmail} • {tagData.internalId}</p>
+                                                <div className="bg-emerald-50 border-2 border-emerald-100 p-8 rounded-[2rem] text-center shadow-inner relative overflow-hidden">
+                                                    <div className="absolute top-4 right-4 text-emerald-600/20">
+                                                        <svg className="w-12 h-12" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
+                                                    </div>
+                                                    <p className="text-[10px] text-emerald-600 font-black uppercase tracking-[0.2em] mb-2">Available Credit</p>
+                                                    <p className="text-6xl font-black text-emerald-800 mb-3">${(tagData.balance || 0).toFixed(2)}</p>
+                                                    <div className="inline-block px-3 py-1 bg-white/50 rounded-full">
+                                                        <p className="text-[10px] text-emerald-700 font-mono font-bold">{tagData.customerEmail}</p>
+                                                    </div>
                                                 </div>
                                                 
-                                                <div className="space-y-2">
-                                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Transaction Amount</label>
-                                                    <input 
-                                                        type="number" 
-                                                        value={amount}
-                                                        onChange={(e) => setAmount(e.target.value)}
-                                                        placeholder="0.00"
-                                                        className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:border-blue-500 outline-none font-black text-xl text-slate-700 transition-all"
-                                                    />
+                                                <div className="space-y-3">
+                                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Sale / Deposit Amount</label>
+                                                    <div className="relative">
+                                                        <span className="absolute left-5 top-1/2 -translate-y-1/2 text-2xl font-black text-slate-300">$</span>
+                                                        <input 
+                                                            type="number" 
+                                                            value={amount}
+                                                            onChange={(e) => setAmount(e.target.value)}
+                                                            placeholder="0.00"
+                                                            className="w-full pl-10 pr-6 py-5 bg-slate-50 border border-slate-200 rounded-2xl focus:border-blue-500 focus:bg-white outline-none font-black text-2xl text-slate-700 transition-all shadow-inner"
+                                                        />
+                                                    </div>
                                                 </div>
 
                                                 <div className="grid grid-cols-2 gap-4">
-                                                    <button onClick={initiatePay} className="py-4 bg-blue-600 text-white rounded-2xl font-black shadow-md hover:bg-blue-700 active:scale-95">Pay</button>
-                                                    <button onClick={initiateTopUp} className="py-4 bg-emerald-600 text-white rounded-2xl font-black shadow-md hover:bg-emerald-700 active:scale-95">Top Up</button>
+                                                    <button onClick={initiatePay} className="py-5 bg-blue-600 text-white rounded-2xl font-black shadow-lg shadow-blue-200 hover:bg-blue-700 active:scale-95 transition-all">Sale (Charge)</button>
+                                                    <button onClick={initiateTopUp} className="py-5 bg-emerald-600 text-white rounded-2xl font-black shadow-lg shadow-emerald-200 hover:bg-emerald-700 active:scale-95 transition-all">Deposit (Add)</button>
                                                 </div>
                                                 
-                                                <button onClick={initiateDelete} className="w-full text-red-300 hover:text-red-500 text-[10px] font-black uppercase tracking-widest pt-4 border-t border-slate-50">
-                                                    Wipe Card Data
-                                                </button>
+                                                <div className="pt-6 border-t border-slate-100 mt-4 flex justify-center">
+                                                    <button onClick={initiateDelete} className="text-red-300 hover:text-red-500 text-[10px] font-black uppercase tracking-[0.2em] transition-colors">
+                                                        Wipe Customer Profile
+                                                    </button>
+                                                </div>
                                             </div>
                                         )}
                                     </div>
                                 </div>
 
-                                {/* Activity Log */}
-                                <div className="bg-slate-900 rounded-3xl shadow-2xl p-6 border border-slate-800 flex flex-col h-[600px]">
-                                    <div className="flex justify-between items-center mb-6">
-                                        <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest">Real-time Activity</h3>
-                                        <button onClick={() => setNfcLog([])} className="text-[10px] bg-slate-800 px-3 py-1 rounded-full text-slate-400 hover:text-white transition-colors">Clear</button>
+                                {/* Event Journal */}
+                                <div className="bg-slate-900 rounded-[2.5rem] shadow-2xl p-8 border border-slate-800 flex flex-col h-[650px]">
+                                    <div className="flex justify-between items-center mb-8">
+                                        <h3 className="text-xs font-black text-slate-500 uppercase tracking-[0.3em]">Session Journal</h3>
+                                        <button onClick={() => setNfcLog([])} className="text-[9px] bg-slate-800 px-4 py-1.5 rounded-full text-slate-400 font-black hover:text-white transition-all uppercase tracking-widest">Clear</button>
                                     </div>
-                                    <div className="flex-1 overflow-y-auto space-y-4 font-mono text-xs pr-2 custom-scrollbar">
+                                    <div className="flex-1 overflow-y-auto space-y-6 font-mono text-xs pr-2 custom-scrollbar">
                                         {nfcLog.length === 0 ? (
-                                            <p className="text-slate-700 italic text-center mt-20">Waiting for interaction...</p>
+                                            <div className="flex flex-col items-center justify-center h-full opacity-10">
+                                                <svg className="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                                                <p className="font-bold tracking-widest uppercase">Waiting for interaction</p>
+                                            </div>
                                         ) : (
                                             nfcLog.map((log) => (
-                                                <div key={log.id} className="border-l-2 border-slate-700 pl-4 py-1">
-                                                    <div className="flex justify-between items-center mb-1">
-                                                        <span className="text-slate-600">[{log.time}]</span>
-                                                        <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase tracking-tighter ${log.type === 'error' ? 'bg-red-500/10 text-red-500' : log.type === 'success' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-blue-500/10 text-blue-400'}`}>
+                                                <div key={log.id} className="group relative">
+                                                    <div className="flex items-center space-x-3 mb-2">
+                                                        <span className="text-slate-600 font-bold">{log.time}</span>
+                                                        <div className={`h-px flex-1 bg-slate-800 group-hover:bg-slate-700 transition-colors`}></div>
+                                                        <span className={`px-2 py-0.5 rounded-sm text-[8px] font-black uppercase tracking-tighter ${log.type === 'error' ? 'bg-red-500 text-white' : log.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-blue-600 text-white'}`}>
                                                             {log.type}
                                                         </span>
                                                     </div>
-                                                    <p className="text-slate-200 leading-relaxed font-medium">{log.msg}</p>
+                                                    <p className="text-slate-200 leading-relaxed font-semibold pl-4 border-l-2 border-slate-800 group-hover:border-slate-600 transition-all">{log.msg}</p>
                                                 </div>
                                             ))
                                         )}
@@ -371,23 +391,24 @@
                 );
             }
 
-            // Login logic remains the same
             return (
                 <div className="min-h-screen flex items-center justify-center p-4 bg-slate-50">
-                    <div className="max-w-md w-full bg-white rounded-[2.5rem] shadow-2xl p-8 lg:p-12 border border-slate-100">
-                        <div className="text-center mb-12">
+                    <div className="max-w-md w-full bg-white rounded-[3rem] shadow-2xl p-10 lg:p-14 border border-slate-100">
+                        <div className="text-center mb-14">
                             <div className="mx-auto w-24 h-24 bg-blue-600 rounded-[2rem] flex items-center justify-center mb-8 shadow-xl rotate-3">
                                 <svg className="w-12 h-12 text-white -rotate-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                             </div>
-                            <h2 className="text-4xl font-black text-slate-900 tracking-tight">Power Studios</h2>
-                            <p className="text-xs text-slate-400 font-bold uppercase tracking-widest mt-3 italic">Internal Management</p>
+                            <h2 className="text-4xl font-black text-slate-900 tracking-tighter">Power Studios</h2>
+                            <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.4em] mt-4">Authorized Access Only</p>
                         </div>
                         <form onSubmit={handleSubmit} className="space-y-6">
                             {error && <div className="bg-red-50 border-2 border-red-100 p-4 rounded-2xl text-[10px] text-red-700 font-black uppercase tracking-tight">{error}</div>}
-                            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="block w-full px-6 py-5 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-blue-500 focus:outline-none transition-all text-sm font-bold" placeholder="Email"/>
-                            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="block w-full px-6 py-5 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-blue-500 focus:outline-none transition-all text-sm font-bold" placeholder="Password"/>
-                            <button type="submit" disabled={isLoading} className="w-full py-5 rounded-2xl shadow-xl text-sm font-black text-white bg-blue-600 hover:bg-blue-700 transform transition-all active:scale-95 flex items-center justify-center">
-                                {isLoading ? 'Authenticating...' : 'Authenticate Access'}
+                            <div className="space-y-4">
+                                <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="block w-full px-7 py-5 bg-slate-50 border-2 border-slate-100 rounded-3xl focus:border-blue-500 focus:bg-white focus:outline-none transition-all text-sm font-bold shadow-inner" placeholder="Operator Email"/>
+                                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="block w-full px-7 py-5 bg-slate-50 border-2 border-slate-100 rounded-3xl focus:border-blue-500 focus:bg-white focus:outline-none transition-all text-sm font-bold shadow-inner" placeholder="Security Password"/>
+                            </div>
+                            <button type="submit" disabled={isLoading} className="w-full py-5 rounded-3xl shadow-xl shadow-blue-600/20 text-sm font-black text-white bg-blue-600 hover:bg-blue-700 transform transition-all active:scale-95 flex items-center justify-center uppercase tracking-widest">
+                                {isLoading ? 'Verifying...' : 'Launch Terminal'}
                             </button>
                         </form>
                     </div>
@@ -398,5 +419,10 @@
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar { width: 3px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+    </style>
 </body>
 </html>
