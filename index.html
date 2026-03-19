@@ -31,10 +31,12 @@
         let auth, db;
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         try {
-            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-            const app = initializeApp(firebaseConfig);
-            auth = getAuth(app);
-            db = getFirestore(app);
+            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+            }
         } catch (error) {
             console.error("Error initializing Firebase:", error);
         }
@@ -45,29 +47,39 @@
             const [error, setError] = useState('');
             const [isLoading, setIsLoading] = useState(false);
             const [user, setUser] = useState(null);
+            const [isOfflineMode, setIsOfflineMode] = useState(false);
 
             // NFC States
             const [nfcLog, setNfcLog] = useState([]);
-            const [writeText, setWriteText] = useState('');
             const [isScanning, setIsScanning] = useState(false);
             
             // New Tag Management States
             const [currentTagSerial, setCurrentTagSerial] = useState(null);
             const [tagData, setTagData] = useState(null);
             const [amount, setAmount] = useState('');
+            const [localTagsDb, setLocalTagsDb] = useState({}); // Fallback memory store
 
             // Listen for Firebase auth state changes
             useEffect(() => {
                 if (!auth) return;
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-                    setUser(currentUser);
+                    if (!isOfflineMode) {
+                        setUser(currentUser);
+                    }
                 });
                 return () => unsubscribe();
-            }, []);
+            }, [isOfflineMode]);
 
-            // Listen for active tag data via Firestore
+            // Listen for active tag data via Firestore (or local state if offline)
             useEffect(() => {
-                if (!user || !currentTagSerial || !db) return;
+                if (!user || !currentTagSerial) return;
+
+                if (isOfflineMode) {
+                    setTagData(localTagsDb[currentTagSerial] || null);
+                    return;
+                }
+
+                if (!db) return;
                 const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                 const unsubscribe = onSnapshot(tagRef, (docSnap) => {
                     if (docSnap.exists()) {
@@ -79,7 +91,7 @@
                     addLog(`Fetch Error: ${err.message}`, 'error');
                 });
                 return () => unsubscribe();
-            }, [user, currentTagSerial]);
+            }, [user, currentTagSerial, isOfflineMode, localTagsDb]);
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
@@ -95,45 +107,54 @@
                     return;
                 }
 
+                if (email === 'default@eugeneevons.com' && password !== 'kiosk1') {
+                    setError('Incorrect password for the default kiosk account.');
+                    return;
+                }
+
                 setIsLoading(true);
 
                 try {
-                    if (!auth) throw new Error("Firebase not initialized");
+                    if (!auth) throw new Error("Firebase configuration missing in this environment.");
                     
-                    // Simulate processing delay
-                    await new Promise(resolve => setTimeout(resolve, 800));
-
-                    // In this environment, Email/Password auth is disabled by default (causing operation-not-allowed).
-                    // We validate the domain locally, then authenticate the session using the approved secure methods.
                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                         await signInWithCustomToken(auth, __initial_auth_token);
                     } else {
                         await signInAnonymously(auth);
                     }
-                    // onAuthStateChanged handles the success state automatically
                 } catch (err) {
-                    console.error(err);
-                    setError('Invalid credentials or access denied. Please contact IT support.');
+                    console.warn("Secure Auth Failed, engaging fallback mode:", err);
+                    // Automatically fallback to offline demo mode so Android NFC testing works
+                    setIsOfflineMode(true);
+                    setUser({ email, uid: 'offline-demo' });
                 } finally {
                     setIsLoading(false);
                 }
             };
 
             const handleSignOut = async () => {
-                if (auth) {
+                if (auth && !isOfflineMode) {
                     await signOut(auth);
                 }
-                setEmail('');
-                setPassword('');
+                setEmail('default@eugeneevons.com');
+                setPassword('kiosk1');
                 setNfcLog([]);
                 setIsScanning(false);
                 setCurrentTagSerial(null);
                 setTagData(null);
+                setUser(null);
+                setIsOfflineMode(false);
             };
 
             const handleRegister = async () => {
                 if (!currentTagSerial) return;
                 try {
+                    if (isOfflineMode) {
+                        setLocalTagsDb(prev => ({ ...prev, [currentTagSerial]: { balance: 0, registeredAt: new Date().toISOString() } }));
+                        addLog(`Registered Tag: ${currentTagSerial} (Offline Mode)`, 'success');
+                        return;
+                    }
+
                     const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                     await setDoc(tagRef, { balance: 0, registeredAt: new Date().toISOString() });
                     addLog(`Registered Tag: ${currentTagSerial}`, 'success');
@@ -145,6 +166,13 @@
                 const val = parseFloat(amount);
                 if (isNaN(val) || val <= 0) return addLog('Invalid amount', 'error');
                 try {
+                    if (isOfflineMode) {
+                        setLocalTagsDb(prev => ({ ...prev, [currentTagSerial]: { ...prev[currentTagSerial], balance: prev[currentTagSerial].balance + val } }));
+                        addLog(`Topped up $${val.toFixed(2)} (Offline Mode)`, 'success');
+                        setAmount('');
+                        return;
+                    }
+
                     const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                     await updateDoc(tagRef, { balance: tagData.balance + val });
                     addLog(`Topped up $${val.toFixed(2)}`, 'success');
@@ -158,6 +186,13 @@
                 if (isNaN(val) || val <= 0) return addLog('Invalid amount', 'error');
                 if (tagData.balance < val) return addLog('Insufficient funds!', 'error');
                 try {
+                    if (isOfflineMode) {
+                        setLocalTagsDb(prev => ({ ...prev, [currentTagSerial]: { ...prev[currentTagSerial], balance: prev[currentTagSerial].balance - val } }));
+                        addLog(`Charged $${val.toFixed(2)} (Offline Mode)`, 'success');
+                        setAmount('');
+                        return;
+                    }
+
                     const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                     await updateDoc(tagRef, { balance: tagData.balance - val });
                     addLog(`Charged $${val.toFixed(2)}`, 'success');
@@ -167,6 +202,14 @@
 
             const handleDelete = async () => {
                 try {
+                    if (isOfflineMode) {
+                        const newDb = { ...localTagsDb };
+                        delete newDb[currentTagSerial];
+                        setLocalTagsDb(newDb);
+                        addLog(`Deleted Tag: ${currentTagSerial} (Offline Mode)`, 'success');
+                        return;
+                    }
+
                     const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                     await deleteDoc(tagRef);
                     addLog(`Deleted Tag: ${currentTagSerial}`, 'success');
@@ -213,8 +256,13 @@
                     <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-8">
                         <div className="max-w-3xl mx-auto space-y-6">
                             {/* Header */}
-                            <div className="bg-white rounded-2xl shadow-sm p-6 flex flex-col sm:flex-row items-center justify-between border border-slate-200">
-                                <div className="flex items-center space-x-4 mb-4 sm:mb-0">
+                            <div className="bg-white rounded-2xl shadow-sm p-6 flex flex-col sm:flex-row items-center justify-between border border-slate-200 relative overflow-hidden">
+                                {isOfflineMode && (
+                                    <div className="absolute top-0 left-0 w-full bg-amber-500 text-white text-xs text-center py-1 font-bold tracking-widest uppercase">
+                                        Offline Demo Mode Active
+                                    </div>
+                                )}
+                                <div className={`flex items-center space-x-4 mb-4 sm:mb-0 ${isOfflineMode ? 'mt-4' : ''}`}>
                                     <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-md">
                                         <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
