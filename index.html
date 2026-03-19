@@ -22,70 +22,68 @@
     <!-- Note the type="text/babel" and data-type="module" which is crucial for Babel to process ES imports -->
     <script type="text/babel" data-type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, updateDoc, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
 
         const { useState, useEffect } = React;
 
-        // Initialize Firebase using the environment config
-        let auth, db;
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        let initError = null;
+        // Your web app's Firebase configuration hardcoded directly
+        const firebaseConfig = {
+            apiKey: "AIzaSyCtbA4ro1ZU429f9HTn29DHjVCpq4t-N-s",
+            authDomain: "kisok-a496b.firebaseapp.com",
+            projectId: "kisok-a496b",
+            storageBucket: "kisok-a496b.firebasestorage.app",
+            messagingSenderId: "850722698358",
+            appId: "1:850722698358:web:a1603cbb7aafccecebdb57",
+            measurementId: "G-E8KG84NDCQ"
+        };
 
+        // App ID for Firestore path structure
+        const appId = "kisok-a496b";
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        let analytics;
         try {
-            if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-                const firebaseConfig = JSON.parse(__firebase_config);
-                const app = initializeApp(firebaseConfig);
-                auth = getAuth(app);
-                db = getFirestore(app);
-            } else {
-                initError = "Firebase config missing from environment (__firebase_config).";
-            }
-        } catch (error) {
-            console.error("Error initializing Firebase:", error);
-            initError = `Firebase Init Exception: ${error.message}`;
+            analytics = getAnalytics(app);
+        } catch (e) {
+            console.warn("Analytics blocked or not supported in this environment.");
         }
 
         function App() {
             const [email, setEmail] = useState('default@eugeneevons.com');
             const [password, setPassword] = useState('kiosk1');
-            const [error, setError] = useState(initError);
+            const [error, setError] = useState('');
             const [isLoading, setIsLoading] = useState(false);
             const [user, setUser] = useState(null);
-            const [isOfflineMode, setIsOfflineMode] = useState(false);
 
             // NFC States
             const [nfcLog, setNfcLog] = useState([]);
             const [isScanning, setIsScanning] = useState(false);
             
-            // New Tag Management States
+            // Tag Management States
             const [currentTagSerial, setCurrentTagSerial] = useState(null);
             const [tagData, setTagData] = useState(null);
             const [amount, setAmount] = useState('');
-            const [localTagsDb, setLocalTagsDb] = useState({}); // Fallback memory store
 
             // Listen for Firebase auth state changes
             useEffect(() => {
-                if (!auth) return;
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-                    if (!isOfflineMode) {
-                        setUser(currentUser);
-                    }
+                    setUser(currentUser);
                 });
                 return () => unsubscribe();
-            }, [isOfflineMode]);
+            }, []);
 
-            // Listen for active tag data via Firestore (or local state if offline)
+            // Listen for active tag data via Firestore
             useEffect(() => {
-                if (!user || !currentTagSerial) return;
-
-                if (isOfflineMode) {
-                    setTagData(localTagsDb[currentTagSerial] || null);
-                    return;
-                }
-
-                if (!db) return;
+                if (!user || !currentTagSerial || !db) return;
+                
+                // Path following RULE 1: /artifacts/{appId}/public/data/{collectionName}/{docId}
                 const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
+                
                 const unsubscribe = onSnapshot(tagRef, (docSnap) => {
                     if (docSnap.exists()) {
                         setTagData(docSnap.data());
@@ -93,139 +91,94 @@
                         setTagData(null);
                     }
                 }, (err) => {
-                    addLog(`Firestore Sync Error: ${err.code || err.message}`, 'error');
+                    addLog(`Firestore Error: ${err.code} - ${err.message}`, 'error');
                 });
                 return () => unsubscribe();
-            }, [user, currentTagSerial, isOfflineMode, localTagsDb]);
+            }, [user, currentTagSerial]);
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
                 setError('');
-                
-                if (!email || !password) {
-                    setError('Please fill in both your email and password.');
-                    return;
-                }
-                
-                if (!email.endsWith('@eugeneevons.com')) {
-                    setError('Access denied. Only @eugeneevons.com email addresses are authorized.');
-                    return;
-                }
-
-                if (email === 'default@eugeneevons.com' && password !== 'kiosk1') {
-                    setError('Incorrect password for the default kiosk account.');
-                    return;
-                }
-
                 setIsLoading(true);
 
                 try {
-                    if (!auth) throw new Error(initError || "Firebase Auth not available.");
-                    
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
+                    // Attempting standard Email/Password sign-in with your provided config
+                    await signInWithEmailAndPassword(auth, email, password);
                 } catch (err) {
-                    console.error("Auth Error Detail:", err);
-                    const detailedError = err.code ? `Firebase Error [${err.code}]: ${err.message}` : err.message;
-                    setError(`Login failed: ${detailedError}. Switching to Demo Mode...`);
+                    console.error("Auth Error:", err);
+                    let userMsg = "Authentication failed.";
                     
-                    // Show the error message for 2.5 seconds before falling back
-                    await new Promise(r => setTimeout(r, 2500));
-                    
-                    setIsOfflineMode(true);
-                    setUser({ email, uid: 'offline-demo' });
+                    if (err.code === 'auth/operation-not-allowed') {
+                        userMsg = "ERROR: Email/Password login is not enabled in your Firebase Console.";
+                    } else if (err.code === 'auth/invalid-credential') {
+                        userMsg = "Invalid email or password.";
+                    } else if (err.code === 'auth/network-request-failed') {
+                        userMsg = "Network error. Check your internet connection.";
+                    } else {
+                        userMsg = `Error [${err.code}]: ${err.message}`;
+                    }
+                    setError(userMsg);
                 } finally {
                     setIsLoading(false);
                 }
             };
 
             const handleSignOut = async () => {
-                if (auth && !isOfflineMode) {
-                    await signOut(auth);
-                }
+                await signOut(auth);
                 setEmail('default@eugeneevons.com');
                 setPassword('kiosk1');
                 setNfcLog([]);
                 setIsScanning(false);
                 setCurrentTagSerial(null);
                 setTagData(null);
-                setUser(null);
-                setIsOfflineMode(false);
-                setError('');
             };
 
             const handleRegister = async () => {
-                if (!currentTagSerial) return;
+                if (!user || !currentTagSerial) return;
                 try {
-                    if (isOfflineMode) {
-                        setLocalTagsDb(prev => ({ ...prev, [currentTagSerial]: { balance: 0, registeredAt: new Date().toISOString() } }));
-                        addLog(`Registered Tag: ${currentTagSerial} (Local Store)`, 'success');
-                        return;
-                    }
-
                     const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
-                    await setDoc(tagRef, { balance: 0, registeredAt: new Date().toISOString() });
+                    await setDoc(tagRef, { 
+                        balance: 0, 
+                        registeredAt: new Date().toISOString(),
+                        createdBy: user.uid 
+                    });
                     addLog(`Registered Tag: ${currentTagSerial}`, 'success');
-                } catch(err) { addLog(`Register Error: ${err.code || err.message}`, 'error'); }
+                } catch(err) { addLog(`Register Error: ${err.message}`, 'error'); }
             };
 
             const handleTopUp = async () => {
-                if (!tagData || !amount) return;
+                if (!user || !tagData || !amount) return;
                 const val = parseFloat(amount);
                 if (isNaN(val) || val <= 0) return addLog('Invalid amount', 'error');
                 try {
-                    if (isOfflineMode) {
-                        setLocalTagsDb(prev => ({ ...prev, [currentTagSerial]: { ...prev[currentTagSerial], balance: prev[currentTagSerial].balance + val } }));
-                        addLog(`Topped up $${val.toFixed(2)} (Local)`, 'success');
-                        setAmount('');
-                        return;
-                    }
-
                     const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                     await updateDoc(tagRef, { balance: tagData.balance + val });
                     addLog(`Topped up $${val.toFixed(2)}`, 'success');
                     setAmount('');
-                } catch(err) { addLog(`Top Up Error: ${err.code || err.message}`, 'error'); }
+                } catch(err) { addLog(`Top Up Error: ${err.message}`, 'error'); }
             };
 
             const handlePay = async () => {
-                if (!tagData || !amount) return;
+                if (!user || !tagData || !amount) return;
                 const val = parseFloat(amount);
                 if (isNaN(val) || val <= 0) return addLog('Invalid amount', 'error');
                 if (tagData.balance < val) return addLog('Insufficient funds!', 'error');
                 try {
-                    if (isOfflineMode) {
-                        setLocalTagsDb(prev => ({ ...prev, [currentTagSerial]: { ...prev[currentTagSerial], balance: prev[currentTagSerial].balance - val } }));
-                        addLog(`Charged $${val.toFixed(2)} (Local)`, 'success');
-                        setAmount('');
-                        return;
-                    }
-
                     const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                     await updateDoc(tagRef, { balance: tagData.balance - val });
                     addLog(`Charged $${val.toFixed(2)}`, 'success');
                     setAmount('');
-                } catch(err) { addLog(`Charge Error: ${err.code || err.message}`, 'error'); }
+                } catch(err) { addLog(`Charge Error: ${err.message}`, 'error'); }
             };
 
             const handleDelete = async () => {
+                if (!user || !currentTagSerial) return;
                 try {
-                    if (isOfflineMode) {
-                        const newDb = { ...localTagsDb };
-                        delete newDb[currentTagSerial];
-                        setLocalTagsDb(newDb);
-                        addLog(`Deleted Tag: ${currentTagSerial} (Local)`, 'success');
-                        return;
-                    }
-
                     const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTagSerial);
                     await deleteDoc(tagRef);
                     addLog(`Deleted Tag: ${currentTagSerial}`, 'success');
                     setTagData(null);
-                } catch(err) { addLog(`Delete Error: ${err.code || err.message}`, 'error'); }
+                } catch(err) { addLog(`Delete Error: ${err.message}`, 'error'); }
             };
 
             const addLog = (msg, type = 'info') => {
@@ -235,28 +188,26 @@
             const startNfcScan = async () => {
                 try {
                     if (!('NDEFReader' in window)) {
-                        addLog('Web NFC not supported on this device.', 'error');
+                        addLog('Web NFC not supported on this browser/device.', 'error');
                         return;
                     }
                     const ndef = new NDEFReader();
                     await ndef.scan();
                     setIsScanning(true);
-                    addLog('Scanning active. Tap NFC tag...', 'info');
+                    addLog('Scanner Active. Tap your tag...', 'info');
 
                     ndef.addEventListener("readingerror", () => {
-                        addLog('NFC Read Error. Try again.', 'error');
+                        addLog('NFC Read Error.', 'error');
                     });
 
                     ndef.addEventListener("reading", ({ serialNumber }) => {
                         if (serialNumber) {
-                            addLog(`Tag detected! ID: ${serialNumber}`, 'success');
+                            addLog(`Tag detected: ${serialNumber}`, 'success');
                             setCurrentTagSerial(serialNumber);
-                        } else {
-                            addLog('Tag detected but missing serial number.', 'error');
                         }
                     });
                 } catch (error) {
-                    addLog(`NFC Permission/Scan Error: ${error.message}`, 'error');
+                    addLog(`NFC Error: ${error.message}`, 'error');
                     setIsScanning(false);
                 }
             };
@@ -266,154 +217,85 @@
                 return (
                     <div className="min-h-screen bg-slate-100 p-4 sm:p-6 lg:p-8">
                         <div className="max-w-3xl mx-auto space-y-6">
-                            {/* Header */}
-                            <div className="bg-white rounded-2xl shadow-sm p-6 flex flex-col sm:flex-row items-center justify-between border border-slate-200 relative overflow-hidden">
-                                {isOfflineMode && (
-                                    <div className="absolute top-0 left-0 w-full bg-amber-500 text-white text-[10px] text-center py-0.5 font-bold tracking-widest uppercase">
-                                        Offline Demo Mode (Data will not persist)
-                                    </div>
-                                )}
-                                <div className={`flex items-center space-x-4 mb-4 sm:mb-0 ${isOfflineMode ? 'mt-3' : ''}`}>
+                            <div className="bg-white rounded-2xl shadow-sm p-6 flex items-center justify-between border border-slate-200">
+                                <div className="flex items-center space-x-4">
                                     <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-md">
                                         <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
                                         </svg>
                                     </div>
                                     <div>
-                                        <h2 className="text-xl font-bold text-slate-900">Power Studios Portal</h2>
-                                        <p className="text-sm text-slate-500">{user.email || email}</p>
+                                        <h2 className="text-xl font-bold text-slate-900">Power Studios</h2>
+                                        <p className="text-xs text-slate-500 font-mono">{user.email}</p>
                                     </div>
                                 </div>
-                                <button 
-                                    onClick={handleSignOut} 
-                                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-lg transition-colors text-sm"
-                                >
+                                <button onClick={handleSignOut} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-lg transition-colors text-sm">
                                     Sign Out
                                 </button>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                {/* NFC Actions */}
                                 <div className="space-y-6">
                                     <div className="bg-white rounded-2xl shadow-sm p-6 border border-slate-200">
-                                        <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center">
-                                            <svg className="w-5 h-5 mr-2 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                            </svg>
-                                            1. Scan Card
-                                        </h3>
+                                        <h3 className="text-lg font-semibold text-slate-800 mb-4">1. Scan Card</h3>
                                         <button 
                                             onClick={startNfcScan}
                                             disabled={isScanning}
-                                            className={`w-full py-3 px-4 rounded-xl font-medium text-white transition-all shadow-sm ${isScanning ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                            className={`w-full py-4 px-4 rounded-xl font-bold text-white transition-all shadow-md ${isScanning ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 active:scale-95'}`}
                                         >
-                                            {isScanning ? 'Scanner Ready' : 'Enable Scanner'}
+                                            {isScanning ? 'Scanner Active' : 'Start Scanning'}
                                         </button>
-                                        
                                         {currentTagSerial && (
                                             <div className="mt-4 p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between">
-                                                <span className="text-xs text-slate-500 font-mono">ID: {currentTagSerial}</span>
-                                                <button onClick={() => { setCurrentTagSerial(null); setTagData(null); }} className="text-xs text-red-500 hover:text-red-700">Detach</button>
+                                                <span className="text-xs font-mono text-slate-500">ID: {currentTagSerial}</span>
+                                                <button onClick={() => {setCurrentTagSerial(null); setTagData(null);}} className="text-xs text-red-500">Clear</button>
                                             </div>
                                         )}
                                     </div>
 
                                     <div className="bg-white rounded-2xl shadow-sm p-6 border border-slate-200">
-                                        <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center">
-                                            <svg className="w-5 h-5 mr-2 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                                            </svg>
-                                            2. Wallet Status
-                                        </h3>
-                                        
+                                        <h3 className="text-lg font-semibold text-slate-800 mb-4">2. Wallet Status</h3>
                                         {!currentTagSerial ? (
-                                            <p className="text-sm text-slate-400 italic text-center py-6 border-2 border-dashed border-slate-100 rounded-xl">Tap a card to view balance</p>
+                                            <p className="text-sm text-slate-400 italic text-center py-6">Tap a card to start</p>
                                         ) : !tagData ? (
-                                            <div className="space-y-4 text-center py-2">
-                                                <div className="text-sm text-amber-700 bg-amber-50 p-4 rounded-xl border border-amber-200">
-                                                    <strong>New Tag Detected</strong><br/>
-                                                    This card is not yet in our database.
-                                                </div>
-                                                <button 
-                                                    onClick={handleRegister}
-                                                    className="w-full py-3 px-4 bg-slate-800 hover:bg-slate-900 rounded-xl font-medium text-white transition-all shadow-sm"
-                                                >
-                                                    Register Card
-                                                </button>
+                                            <div className="text-center py-2 space-y-4">
+                                                <div className="text-sm text-amber-700 bg-amber-50 p-4 rounded-xl border border-amber-200">New Tag Detected</div>
+                                                <button onClick={handleRegister} className="w-full py-3 bg-slate-800 text-white rounded-xl font-bold">Register Card</button>
                                             </div>
                                         ) : (
                                             <div className="space-y-4">
-                                                <div className="bg-emerald-50 border border-emerald-200 p-5 rounded-xl text-center shadow-inner">
-                                                    <p className="text-xs text-emerald-600 font-bold uppercase tracking-widest mb-1">Available Credits</p>
+                                                <div className="bg-emerald-50 border border-emerald-200 p-5 rounded-xl text-center">
+                                                    <p className="text-xs text-emerald-600 font-bold uppercase tracking-widest mb-1">Balance</p>
                                                     <p className="text-4xl font-black text-emerald-800">${(tagData.balance || 0).toFixed(2)}</p>
                                                 </div>
-                                                
-                                                <div className="relative">
-                                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                                        <span className="text-slate-400 font-bold">$</span>
-                                                    </div>
-                                                    <input 
-                                                        type="number" 
-                                                        min="0"
-                                                        step="0.01"
-                                                        value={amount}
-                                                        onChange={(e) => setAmount(e.target.value)}
-                                                        placeholder="0.00"
-                                                        className="w-full pl-8 pr-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all font-mono"
-                                                    />
-                                                </div>
-
+                                                <input 
+                                                    type="number" 
+                                                    value={amount}
+                                                    onChange={(e) => setAmount(e.target.value)}
+                                                    placeholder="$0.00"
+                                                    className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-mono"
+                                                />
                                                 <div className="grid grid-cols-2 gap-3">
-                                                    <button 
-                                                        onClick={handlePay}
-                                                        className="py-3 px-4 bg-blue-600 text-white hover:bg-blue-700 rounded-xl font-bold transition-all shadow-md active:scale-95"
-                                                    >
-                                                        Pay
-                                                    </button>
-                                                    <button 
-                                                        onClick={handleTopUp}
-                                                        className="py-3 px-4 bg-emerald-600 text-white hover:bg-emerald-700 rounded-xl font-bold transition-all shadow-md active:scale-95"
-                                                    >
-                                                        Top Up
-                                                    </button>
+                                                    <button onClick={handlePay} className="py-3 bg-blue-600 text-white rounded-xl font-bold active:scale-95">Pay</button>
+                                                    <button onClick={handleTopUp} className="py-3 bg-emerald-600 text-white rounded-xl font-bold active:scale-95">Top Up</button>
                                                 </div>
-                                                
-                                                <div className="pt-4 border-t border-slate-100 mt-2">
-                                                    <button 
-                                                        onClick={handleDelete}
-                                                        className="w-full py-2 px-4 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all text-xs font-semibold"
-                                                    >
-                                                        Permanently Delete Card Data
-                                                    </button>
-                                                </div>
+                                                <button onClick={handleDelete} className="w-full py-2 text-red-400 hover:text-red-600 text-xs font-bold pt-4">Delete Card Data</button>
                                             </div>
                                         )}
                                     </div>
                                 </div>
 
-                                {/* Log */}
                                 <div className="bg-slate-900 rounded-2xl shadow-xl p-6 border border-slate-800 flex flex-col h-[520px]">
-                                    <div className="flex justify-between items-center mb-4">
-                                        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest">System Activity</h3>
-                                        <button onClick={() => setNfcLog([])} className="text-[10px] bg-slate-800 px-2 py-1 rounded text-slate-500 hover:text-white transition-colors">Clear Log</button>
-                                    </div>
+                                    <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4">Activity Log</h3>
                                     <div className="flex-1 overflow-y-auto space-y-3 font-mono text-xs pr-2">
-                                        {nfcLog.length === 0 ? (
-                                            <p className="text-slate-700 italic text-center mt-10">Waiting for interaction...</p>
-                                        ) : (
-                                            nfcLog.map((log) => (
-                                                <div key={log.id} className="border-l-2 border-slate-800 pl-3 py-1">
-                                                    <div className="flex justify-between mb-1">
-                                                        <span className="text-slate-600">[{log.time}]</span>
-                                                        <span className={`px-1.5 rounded-[4px] text-[9px] font-bold uppercase ${log.type === 'error' ? 'bg-red-900/30 text-red-400' : log.type === 'success' ? 'bg-emerald-900/30 text-emerald-400' : 'bg-blue-900/30 text-blue-400'}`}>
-                                                            {log.type}
-                                                        </span>
-                                                    </div>
-                                                    <p className="text-slate-300 break-words leading-relaxed">{log.msg}</p>
-                                                </div>
-                                            ))
-                                        )}
+                                        {nfcLog.map((log) => (
+                                            <div key={log.id} className="border-l-2 border-slate-800 pl-3 py-1">
+                                                <span className="text-slate-600">[{log.time}]</span>{' '}
+                                                <span className={`${log.type === 'error' ? 'text-red-400' : log.type === 'success' ? 'text-green-400' : 'text-blue-300'}`}>
+                                                    {log.msg}
+                                                </span>
+                                            </div>
+                                        ))}
                                     </div>
                                 </div>
                             </div>
@@ -422,71 +304,59 @@
                 );
             }
 
-            // Login
+            // Login Screen
             return (
                 <div className="min-h-screen flex items-center justify-center p-4">
-                    <div className="max-w-md w-full bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden">
-                        <div className="p-8 sm:p-10">
-                            <div className="text-center mb-10">
-                                <div className="mx-auto w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center mb-6 shadow-xl rotate-3">
-                                    <svg className="w-10 h-10 text-white -rotate-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                                    </svg>
-                                </div>
-                                <h2 className="text-3xl font-black text-slate-900 tracking-tight">Power Studios</h2>
-                                <p className="mt-2 text-sm text-slate-500 font-medium italic">
-                                    Internal Management Portal
-                                </p>
+                    <div className="max-w-md w-full bg-white rounded-3xl shadow-2xl p-8 sm:p-10 border border-slate-100">
+                        <div className="text-center mb-10">
+                            <div className="mx-auto w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center mb-6 shadow-xl">
+                                <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                </svg>
                             </div>
-
-                            <form onSubmit={handleSubmit} className="space-y-6">
-                                {error && (
-                                    <div className="bg-red-50 border-2 border-red-100 p-4 rounded-2xl animate-shake">
-                                        <div className="flex">
-                                            <svg className="h-5 w-5 text-red-500 mr-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                            </svg>
-                                            <p className="text-xs text-red-700 leading-normal font-semibold uppercase tracking-tight">{error}</p>
-                                        </div>
-                                    </div>
-                                )}
-
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest ml-1 mb-2">Corporate ID</label>
-                                    <input
-                                        type="email"
-                                        value={email}
-                                        onChange={(e) => setEmail(e.target.value)}
-                                        className="block w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-blue-500 focus:bg-white focus:outline-none transition-all text-sm font-semibold"
-                                        placeholder="user@eugeneevons.com"
-                                    />
-                                </div>
-
-                                <div>
-                                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest ml-1 mb-2">Access Key</label>
-                                    <input
-                                        type="password"
-                                        value={password}
-                                        onChange={(e) => setPassword(e.target.value)}
-                                        className="block w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-blue-500 focus:bg-white focus:outline-none transition-all text-sm font-semibold"
-                                        placeholder="••••••••"
-                                    />
-                                </div>
-
-                                <button
-                                    type="submit"
-                                    disabled={isLoading}
-                                    className={`w-full py-4 px-6 rounded-2xl shadow-lg shadow-blue-200 text-sm font-black text-white bg-blue-600 hover:bg-blue-700 transform transition-all active:scale-95 flex items-center justify-center ${isLoading ? 'opacity-80' : ''}`}
-                                >
-                                    {isLoading ? (
-                                        <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                        </svg>
-                                    ) : 'Authenticate Session'}
-                                </button>
-                            </form>
+                            <h2 className="text-3xl font-black text-slate-900">Power Studios</h2>
+                            <p className="text-sm text-slate-500 font-medium">Internal Management Portal</p>
                         </div>
+
+                        <form onSubmit={handleSubmit} className="space-y-6">
+                            {error && (
+                                <div className="bg-red-50 border-2 border-red-100 p-4 rounded-2xl text-xs text-red-700 font-bold uppercase tracking-tight">
+                                    {error}
+                                </div>
+                            )}
+                            <div>
+                                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Email</label>
+                                <input
+                                    type="email"
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    className="block w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-blue-500 focus:outline-none transition-all text-sm font-semibold"
+                                    placeholder="user@eugeneevons.com"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Password</label>
+                                <input
+                                    type="password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    className="block w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl focus:border-blue-500 focus:outline-none transition-all text-sm font-semibold"
+                                    placeholder="••••••••"
+                                />
+                            </div>
+                            <button
+                                type="submit"
+                                disabled={isLoading}
+                                className="w-full py-4 rounded-2xl shadow-lg text-sm font-black text-white bg-blue-600 hover:bg-blue-700 transform transition-all active:scale-95 flex items-center justify-center"
+                            >
+                                {isLoading ? (
+                                    <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                ) : 'Authenticate'}
+                            </button>
+                        </form>
                     </div>
                 </div>
             );
@@ -495,17 +365,5 @@
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
-    
-    <style>
-        @keyframes shake {
-            0%, 100% { transform: translateX(0); }
-            25% { transform: translateX(-4px); }
-            75% { transform: translateX(4px); }
-        }
-        .animate-shake { animation: shake 0.2s ease-in-out 0s 2; }
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
-    </style>
 </body>
 </html>
