@@ -52,12 +52,16 @@
             const [isScanning, setIsScanning] = useState(false);
             
             // Workflow State
-            const [activeAction, setActiveAction] = useState(null); // 'REGISTER' | 'PAY' | 'TOP_UP' | 'DELETE' | 'BALANCE' | 'LOAN'
+            const [activeAction, setActiveAction] = useState(null); // 'REGISTER'|'PAY'|'TOP_UP'|'DELETE'|'BALANCE'|'LOAN'|'TRANSFER'
             const [amount, setAmount] = useState('');
             const [voucherAmount, setVoucherAmount] = useState('');
             const [customerEmail, setCustomerEmail] = useState('');
             const [actionResult, setActionResult] = useState(null); 
-            const [topUpMode, setTopUpMode] = useState('NORMAL'); // 'NORMAL' | 'PAY_LOAN'
+            const [topUpMode, setTopUpMode] = useState('NORMAL'); 
+            
+            // Transfer Workflow States
+            const [transferState, setTransferState] = useState('AWAITING_SOURCE');
+            const [transferData, setTransferData] = useState(null);
 
             // Refs for NFC Event Listener
             const actionRef = useRef(null);
@@ -65,6 +69,8 @@
             const voucherAmountRef = useRef(null);
             const customerEmailRef = useRef(null);
             const topUpModeRef = useRef(null);
+            const transferStateRef = useRef(null);
+            const transferDataRef = useRef(null);
 
             useEffect(() => {
                 actionRef.current = activeAction;
@@ -72,14 +78,19 @@
                 voucherAmountRef.current = voucherAmount;
                 customerEmailRef.current = customerEmail;
                 topUpModeRef.current = topUpMode;
+                transferStateRef.current = transferState;
+                transferDataRef.current = transferData;
+
                 if (!activeAction) {
                     setActionResult(null);
                     setAmount('');
                     setVoucherAmount('');
                     setCustomerEmail('');
                     setTopUpMode('NORMAL');
+                    setTransferState('AWAITING_SOURCE');
+                    setTransferData(null);
                 }
-            }, [activeAction, amount, voucherAmount, customerEmail, topUpMode]);
+            }, [activeAction, amount, voucherAmount, customerEmail, topUpMode, transferState, transferData]);
 
             useEffect(() => {
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -110,18 +121,88 @@
                         const currentVoucher = parseFloat(voucherAmountRef.current) || 0;
                         const currentEmail = customerEmailRef.current;
                         const currentTopUpMode = topUpModeRef.current;
+                        const currentTransferState = transferStateRef.current;
+                        const currentTransferData = transferDataRef.current;
 
                         if (!action) {
                             addLog(`Card Detected: ${serialNumber}. Choose action first.`, 'info');
                             return;
                         }
 
-                        setActionResult({ status: 'processing', message: 'Processing NFC Tag...' });
+                        // Don't show generic processing for Transfer intermediate steps
+                        if (action !== 'TRANSFER' || currentTransferState === 'AWAITING_DESTINATION') {
+                            setActionResult({ status: 'processing', message: 'Processing NFC Tag...' });
+                        }
 
                         try {
                             const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', serialNumber);
                             
                             switch (action) {
+                                case 'TRANSFER':
+                                    if (currentTransferState === 'AWAITING_SOURCE') {
+                                        const sourceSnap = await getDoc(tagRef);
+                                        if (!sourceSnap.exists()) throw new Error("Source card not registered.");
+                                        
+                                        const data = sourceSnap.data();
+                                        
+                                        // 1. Physically erase the OLD card
+                                        await ndef.write({
+                                            records: [{ recordType: "text", data: "STATUS: ERASED" }]
+                                        });
+                                        
+                                        // 2. Save data to memory state for Step 2
+                                        setTransferData({
+                                            ...data,
+                                            oldSerial: serialNumber
+                                        });
+                                        
+                                        // Advance state to step 2
+                                        setTransferState('AWAITING_DESTINATION');
+                                        setActionResult(null); // Clear processing message to show step 2 UI
+                                        addLog(`Old card (${serialNumber}) erased and buffered.`, 'success');
+
+                                    } else if (currentTransferState === 'AWAITING_DESTINATION') {
+                                        if (serialNumber === currentTransferData.oldSerial) {
+                                            throw new Error("You tapped the erased card again! Please tap a NEW, blank card.");
+                                        }
+                                        
+                                        const destSnap = await getDoc(tagRef);
+                                        if (destSnap.exists()) {
+                                            throw new Error("Target card is already registered to someone else. Please use a blank card.");
+                                        }
+                                        
+                                        // 3. Generate completely new Internal ID
+                                        const newId = `PS-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+                                        
+                                        // 4. Write to NEW physical card
+                                        await ndef.write({
+                                            records: [
+                                                { recordType: "text", data: `ID: ${newId}` },
+                                                { recordType: "text", data: `Customer: ${currentTransferData.customerEmail}` }
+                                            ]
+                                        });
+                                        
+                                        // 5. Create new Firestore record
+                                        await setDoc(tagRef, {
+                                            balance: currentTransferData.balance || 0,
+                                            loanBalance: currentTransferData.loanBalance || 0,
+                                            customerEmail: currentTransferData.customerEmail,
+                                            internalId: newId,
+                                            registeredAt: new Date().toISOString()
+                                        });
+                                        
+                                        // 6. Safely delete the old stranded record now that data is successfully migrated
+                                        const oldDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTransferData.oldSerial);
+                                        await deleteDoc(oldDocRef);
+                                        
+                                        setActionResult({ status: 'success', message: `Transfer Complete! New ID: ${newId}` });
+                                        addLog(`Card transferred. Old wiped. New ID generated.`, 'success');
+                                        
+                                        setTransferState('AWAITING_SOURCE');
+                                        setTransferData(null);
+                                    }
+                                    break;
+
                                 case 'BALANCE':
                                     const balSnap = await getDoc(tagRef);
                                     if (balSnap.exists()) {
@@ -336,7 +417,7 @@
                                                 <p className="text-xs text-slate-400">Charge card (Vouchers OK).</p>
                                             </button>
 
-                                            {/* Loan - New Button */}
+                                            {/* Loan */}
                                             <button 
                                                 onClick={() => { setActiveAction('LOAN'); setActionResult(null); }}
                                                 className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'LOAN' ? 'border-purple-600 bg-purple-50/50' : 'border-slate-100 hover:border-slate-200'}`}
@@ -348,16 +429,28 @@
                                                 <p className="text-xs text-slate-400">Advance credit to wallet.</p>
                                             </button>
 
+                                            {/* Transfer Card - NEW BUTTON */}
+                                            <button 
+                                                onClick={() => { setActiveAction('TRANSFER'); setActionResult(null); }}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'TRANSFER' ? 'border-cyan-600 bg-cyan-50/50' : 'border-slate-100 hover:border-slate-200'}`}
+                                            >
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'TRANSFER' ? 'bg-cyan-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+                                                </div>
+                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Transfer Card</h3>
+                                                <p className="text-xs text-slate-400">Migrate data to new card.</p>
+                                            </button>
+
                                             {/* Delete Card */}
                                             <button 
                                                 onClick={() => { setActiveAction('DELETE'); setActionResult(null); }}
-                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'DELETE' ? 'border-red-600 bg-red-50/50' : 'border-slate-100 hover:border-slate-200'}`}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all sm:col-span-2 ${activeAction === 'DELETE' ? 'border-red-600 bg-red-50/50 ring-4 ring-red-600/5' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
                                                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'DELETE' ? 'bg-red-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
                                                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                                 </div>
                                                 <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Delete Customer</h3>
-                                                <p className="text-xs text-slate-400">Permanently wipe card.</p>
+                                                <p className="text-xs text-slate-400">Permanently wipe card and cloud records.</p>
                                             </button>
                                         </div>
                                     </div>
@@ -367,7 +460,11 @@
                                         <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border-4 border-slate-900 transition-all animate-in fade-in slide-in-from-bottom-4 duration-300">
                                             <div className="flex items-center justify-between mb-8">
                                                 <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em]">2. Terminal Output</h2>
-                                                <button onClick={() => { setActiveAction(null); setActionResult(null); }} className="text-red-500 font-black text-[10px] uppercase">Close</button>
+                                                
+                                                {/* Only allow closing if we are NOT halfway through a transfer */}
+                                                {!(activeAction === 'TRANSFER' && transferState === 'AWAITING_DESTINATION') && (
+                                                    <button onClick={() => { setActiveAction(null); setActionResult(null); }} className="text-red-500 font-black text-[10px] uppercase">Close</button>
+                                                )}
                                             </div>
 
                                             {actionResult ? (
@@ -394,7 +491,7 @@
                                                             <p className="text-6xl font-black text-emerald-800 mb-4">${actionResult.data.balance.toFixed(2)}</p>
                                                             <div className="space-y-1">
                                                                 <p className="text-xs font-bold text-emerald-700">{actionResult.data.customerEmail}</p>
-                                                                <p className="text-[10px] font-mono text-emerald-600 opacity-60">Serial: {actionResult.data.serial}</p>
+                                                                <p className="text-[10px] font-mono text-emerald-600 opacity-60">ID: {actionResult.data.internalId}</p>
                                                             </div>
                                                             {(actionResult.data.loanBalance || 0) > 0 && (
                                                                 <div className="mt-4 inline-block bg-red-100 px-4 py-2 rounded-xl border border-red-200">
@@ -436,6 +533,34 @@
                                             ) : (
                                                 /* Configuration Inputs */
                                                 <div className="space-y-6">
+                                                    
+                                                    {/* TRANSFER CARD CUSTOM UI */}
+                                                    {activeAction === 'TRANSFER' && (
+                                                        <div className="py-4 text-center">
+                                                            {transferState === 'AWAITING_SOURCE' ? (
+                                                                <div>
+                                                                    <div className="w-16 h-16 bg-cyan-50 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
+                                                                        <svg className="w-8 h-8 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+                                                                    </div>
+                                                                    <p className="font-black text-cyan-600 uppercase tracking-tight text-lg">Step 1: Erase Old Card</p>
+                                                                    <p className="text-xs text-slate-500 mt-2 font-medium max-w-xs mx-auto">Tap the customer's CURRENT card. This will safely buffer their data and wipe the physical card.</p>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="border-2 border-dashed border-blue-200 bg-blue-50 p-6 rounded-3xl">
+                                                                    <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce shadow-lg shadow-blue-200">
+                                                                        <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
+                                                                    </div>
+                                                                    <p className="font-black text-blue-800 uppercase tracking-tight text-lg">Step 2: Write New Card</p>
+                                                                    <p className="text-xs text-blue-600 mt-2 font-bold mb-6">Tap a completely BLANK card to finalize transfer.</p>
+                                                                    <div className="bg-white rounded-xl p-4 inline-block shadow-sm border border-blue-100">
+                                                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Migrating Account</p>
+                                                                        <p className="text-sm font-black text-slate-800 mt-1">{transferData?.customerEmail}</p>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+
                                                     {activeAction === 'REGISTER' && (
                                                         <div className="space-y-4">
                                                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Customer Email</label>
@@ -537,8 +662,8 @@
                                                         </div>
                                                     )}
 
-                                                    {/* Waiting for Tap Prompt */}
-                                                    {activeAction !== 'BALANCE' && activeAction !== 'DELETE' && (
+                                                    {/* Generic Waiting for Tap Prompt (Hides during explicit steps like Transfer) */}
+                                                    {activeAction !== 'BALANCE' && activeAction !== 'DELETE' && activeAction !== 'TRANSFER' && (
                                                         <div className="mt-8 p-6 bg-slate-900 rounded-3xl text-white flex items-center justify-between shadow-xl">
                                                             <div className="flex items-center space-x-4">
                                                                 <div className="w-10 h-10 rounded-full border-2 border-dashed border-white/30 flex items-center justify-center animate-spin-slow">
@@ -647,3 +772,5 @@
     </style>
 </body>
 </html>
+
+
