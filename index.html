@@ -52,23 +52,34 @@
             const [isScanning, setIsScanning] = useState(false);
             
             // Workflow State
-            const [activeAction, setActiveAction] = useState(null); // 'REGISTER' | 'PAY' | 'TOP_UP' | 'DELETE' | 'BALANCE'
+            const [activeAction, setActiveAction] = useState(null); // 'REGISTER' | 'PAY' | 'TOP_UP' | 'DELETE' | 'BALANCE' | 'LOAN'
             const [amount, setAmount] = useState('');
+            const [voucherAmount, setVoucherAmount] = useState('');
             const [customerEmail, setCustomerEmail] = useState('');
-            const [actionResult, setActionResult] = useState(null); // Stores success or error info for display in Box 2
+            const [actionResult, setActionResult] = useState(null); 
+            const [topUpMode, setTopUpMode] = useState('NORMAL'); // 'NORMAL' | 'PAY_LOAN'
 
-            // Refs for NFC Event Listener to handle state closures
+            // Refs for NFC Event Listener
             const actionRef = useRef(null);
             const amountRef = useRef(null);
+            const voucherAmountRef = useRef(null);
             const customerEmailRef = useRef(null);
+            const topUpModeRef = useRef(null);
 
             useEffect(() => {
                 actionRef.current = activeAction;
                 amountRef.current = amount;
+                voucherAmountRef.current = voucherAmount;
                 customerEmailRef.current = customerEmail;
-                // Clear the result when switching or clearing actions
-                if (!activeAction) setActionResult(null);
-            }, [activeAction, amount, customerEmail]);
+                topUpModeRef.current = topUpMode;
+                if (!activeAction) {
+                    setActionResult(null);
+                    setAmount('');
+                    setVoucherAmount('');
+                    setCustomerEmail('');
+                    setTopUpMode('NORMAL');
+                }
+            }, [activeAction, amount, voucherAmount, customerEmail, topUpMode]);
 
             useEffect(() => {
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -93,17 +104,19 @@
                     setIsScanning(true);
                     addLog('System Online. Select an action below.', 'success');
 
-                    ndef.addEventListener("reading", async ({ serialNumber, message }) => {
+                    ndef.addEventListener("reading", async ({ serialNumber }) => {
                         const action = actionRef.current;
                         const currentAmount = parseFloat(amountRef.current);
+                        const currentVoucher = parseFloat(voucherAmountRef.current) || 0;
                         const currentEmail = customerEmailRef.current;
+                        const currentTopUpMode = topUpModeRef.current;
 
                         if (!action) {
-                            addLog(`Card Tapped (${serialNumber}). Select an action first.`, 'info');
+                            addLog(`Card Detected: ${serialNumber}. Choose action first.`, 'info');
                             return;
                         }
 
-                        setActionResult({ status: 'processing', message: 'Processing tag...' });
+                        setActionResult({ status: 'processing', message: 'Processing NFC Tag...' });
 
                         try {
                             const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', serialNumber);
@@ -120,12 +133,12 @@
                                         });
                                         addLog(`[BALANCE] Customer: ${data.customerEmail} | Credit: $${data.balance.toFixed(2)}`, 'success');
                                     } else {
-                                        throw new Error(`Card ${serialNumber} is not registered.`);
+                                        throw new Error(`Tag ${serialNumber} is not registered.`);
                                     }
                                     break;
 
                                 case 'REGISTER':
-                                    if (!currentEmail) throw new Error("Missing customer email.");
+                                    if (!currentEmail) throw new Error("Please enter a customer email.");
                                     const internalId = `PS-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
                                     
                                     await ndef.write({
@@ -137,13 +150,14 @@
                                     
                                     await setDoc(tagRef, {
                                         balance: 0,
+                                        loanBalance: 0,
                                         customerEmail: currentEmail,
                                         internalId: internalId,
                                         registeredAt: new Date().toISOString()
                                     });
                                     
-                                    setActionResult({ status: 'success', message: `Registered: ${currentEmail}` });
-                                    addLog(`Registered & Linked: ${currentEmail}`, 'success');
+                                    setActionResult({ status: 'success', message: `Customer Registered: ${currentEmail}` });
+                                    addLog(`Registration Success: ${currentEmail}`, 'success');
                                     setCustomerEmail('');
                                     break;
 
@@ -152,43 +166,87 @@
                                     const topSnap = await getDoc(tagRef);
                                     if (!topSnap.exists()) throw new Error("Card not registered.");
                                     
-                                    const newTopBalance = topSnap.data().balance + currentAmount;
-                                    await updateDoc(tagRef, { balance: newTopBalance });
+                                    let newBal = topSnap.data().balance || 0;
+                                    let newLoanBal = topSnap.data().loanBalance || 0;
+                                    let topMsg = "";
+
+                                    if (currentTopUpMode === 'PAY_LOAN') {
+                                        const payToLoan = Math.min(currentAmount, newLoanBal);
+                                        const overflow = currentAmount - payToLoan;
+                                        newLoanBal -= payToLoan;
+                                        newBal += overflow;
+                                        topMsg = `Paid $${payToLoan.toFixed(2)} to loan.`;
+                                        if (overflow > 0) topMsg += ` Added $${overflow.toFixed(2)} to credit.`;
+                                    } else {
+                                        newBal += currentAmount;
+                                        topMsg = `Added $${currentAmount.toFixed(2)}.`;
+                                    }
                                     
-                                    setActionResult({ status: 'success', message: `Added $${currentAmount.toFixed(2)}. New Balance: $${newTopBalance.toFixed(2)}` });
-                                    addLog(`Deposit Success: +$${currentAmount.toFixed(2)}`, 'success');
+                                    await updateDoc(tagRef, { balance: newBal, loanBalance: newLoanBal });
+                                    
+                                    setActionResult({ status: 'success', message: `${topMsg} New Credit: $${newBal.toFixed(2)}` });
+                                    addLog(`Deposit (${currentTopUpMode}): $${currentAmount.toFixed(2)}`, 'success');
+                                    setAmount('');
+                                    break;
+                                    
+                                case 'LOAN':
+                                    if (isNaN(currentAmount) || currentAmount <= 0) throw new Error("Invalid amount.");
+                                    const loanSnap = await getDoc(tagRef);
+                                    if (!loanSnap.exists()) throw new Error("Card not registered.");
+                                    
+                                    const existingLoan = loanSnap.data().loanBalance || 0;
+                                    if (existingLoan + currentAmount > 5) {
+                                        throw new Error(`Limit Exceeded. Max loan is $5.00. Current loan: $${existingLoan.toFixed(2)}`);
+                                    }
+                                    
+                                    const newLoanBalance = existingLoan + currentAmount;
+                                    const newBalanceWithLoan = (loanSnap.data().balance || 0) + currentAmount;
+                                    
+                                    await updateDoc(tagRef, { balance: newBalanceWithLoan, loanBalance: newLoanBalance });
+                                    
+                                    setActionResult({ status: 'success', message: `Loan Issued for $${currentAmount.toFixed(2)}. Total Loan: $${newLoanBalance.toFixed(2)}` });
+                                    addLog(`Loan Issued: +$${currentAmount.toFixed(2)}`, 'success');
                                     setAmount('');
                                     break;
 
                                 case 'PAY':
-                                    if (isNaN(currentAmount) || currentAmount <= 0) throw new Error("Invalid amount.");
+                                    if (isNaN(currentAmount) || currentAmount <= 0) throw new Error("Invalid base amount.");
                                     const paySnap = await getDoc(tagRef);
                                     if (!paySnap.exists()) throw new Error("Card not registered.");
                                     
                                     const currentBal = paySnap.data().balance;
-                                    if (currentBal < currentAmount) throw new Error("Insufficient funds.");
+                                    const finalCharge = Math.max(0, currentAmount - currentVoucher);
                                     
-                                    const newPayBalance = currentBal - currentAmount;
+                                    if (currentBal < finalCharge) throw new Error(`Insufficient credits. Need $${finalCharge.toFixed(2)}`);
+                                    
+                                    const newPayBalance = currentBal - finalCharge;
                                     await updateDoc(tagRef, { balance: newPayBalance });
                                     
-                                    setActionResult({ status: 'success', message: `Payment successful. Remaining: $${newPayBalance.toFixed(2)}` });
-                                    addLog(`Payment Success: -$${currentAmount.toFixed(2)}`, 'success');
+                                    let payMsg = `Charge Success. Remaining: $${newPayBalance.toFixed(2)}`;
+                                    if (currentVoucher > 0) payMsg += ` (Voucher used: -$${currentVoucher.toFixed(2)})`;
+                                    
+                                    setActionResult({ status: 'success', message: payMsg });
+                                    addLog(`Payment: -$${finalCharge.toFixed(2)}`, 'success');
                                     setAmount('');
+                                    setVoucherAmount('');
                                     break;
 
                                 case 'DELETE':
+                                    const delSnap = await getDoc(tagRef);
+                                    if (!delSnap.exists()) throw new Error("Cannot delete: Tag is not registered.");
+                                    const targetEmail = delSnap.data().customerEmail;
                                     await deleteDoc(tagRef);
-                                    setActionResult({ status: 'success', message: `Customer record for ${serialNumber} deleted.` });
-                                    addLog(`Record wiped for card ${serialNumber}`, 'success');
+                                    setActionResult({ status: 'success', message: `Successfully wiped record for: ${targetEmail}` });
+                                    addLog(`System Wipe: Record for card ${serialNumber} deleted.`, 'success');
                                     break;
                             }
                         } catch (err) {
                             setActionResult({ status: 'error', message: err.message });
-                            addLog(`Error: ${err.message}`, 'error');
+                            addLog(`Action Failed: ${err.message}`, 'error');
                         }
                     });
                 } catch (error) {
-                    addLog(`NFC Setup Error: ${error.message}`, 'error');
+                    addLog(`NFC Hardware Error: ${error.message}`, 'error');
                 }
             };
 
@@ -212,95 +270,118 @@
                             {/* App Header */}
                             <header className="bg-white rounded-3xl shadow-sm p-6 flex items-center justify-between border border-slate-200">
                                 <div className="flex items-center space-x-4">
-                                    <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg rotate-3">
+                                    <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg">
                                         <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                                     </div>
                                     <div>
-                                        <h1 className="text-xl font-black text-slate-900 tracking-tight">Power Studios Terminal</h1>
+                                        <h1 className="text-xl font-black text-slate-900 tracking-tight">Power Studios Kiosk</h1>
                                         <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{user.email}</p>
                                     </div>
                                 </div>
-                                <button onClick={() => signOut(auth)} className="text-[10px] font-black text-slate-400 hover:text-red-500 uppercase tracking-[0.2em] transition-all">Sign Out</button>
+                                <button onClick={() => signOut(auth)} className="text-[10px] font-black text-slate-400 hover:text-red-500 uppercase tracking-widest">Sign Out</button>
                             </header>
 
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                {/* Left Column: Selection */}
+                                {/* Left Column: Action Grid */}
                                 <div className="lg:col-span-2 space-y-6">
                                     <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-slate-200">
                                         <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-8">1. Select Operation</h2>
                                         
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                            {/* Register Option */}
+                                            {/* Register */}
                                             <button 
                                                 onClick={() => { setActiveAction('REGISTER'); setActionResult(null); }}
-                                                className={`p-6 rounded-3xl border-2 text-left transition-all group ${activeAction === 'REGISTER' ? 'border-blue-600 bg-blue-50/50 ring-4 ring-blue-600/5' : 'border-slate-100 hover:border-slate-200'}`}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'REGISTER' ? 'border-blue-600 bg-blue-50/50' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
-                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 transition-colors ${activeAction === 'REGISTER' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'REGISTER' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
                                                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/></svg>
                                                 </div>
-                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1 tracking-tight">New Customer</h3>
-                                                <p className="text-xs text-slate-400 font-medium">Link card to email.</p>
+                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1">New Customer</h3>
+                                                <p className="text-xs text-slate-400">Initialize a new card.</p>
                                             </button>
 
-                                            {/* Balance Option */}
+                                            {/* Balance */}
                                             <button 
                                                 onClick={() => { setActiveAction('BALANCE'); setActionResult(null); }}
-                                                className={`p-6 rounded-3xl border-2 text-left transition-all group ${activeAction === 'BALANCE' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-100 hover:border-slate-200'}`}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'BALANCE' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
-                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 transition-colors ${activeAction === 'BALANCE' ? 'bg-white text-slate-900 shadow-sm' : 'bg-slate-100 text-slate-400'}`}>
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'BALANCE' ? 'bg-white text-slate-900' : 'bg-slate-100 text-slate-400'}`}>
                                                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
                                                 </div>
-                                                <h3 className={`font-black uppercase text-sm mb-1 tracking-tight ${activeAction === 'BALANCE' ? 'text-white' : 'text-slate-900'}`}>Check Balance</h3>
-                                                <p className={`text-xs font-medium ${activeAction === 'BALANCE' ? 'text-slate-400' : 'text-slate-400'}`}>Verify credit status.</p>
+                                                <h3 className="font-black uppercase text-sm mb-1">Balance Check</h3>
+                                                <p className="text-xs opacity-60">View current credits.</p>
                                             </button>
 
-                                            {/* Top Up Option */}
+                                            {/* Top Up */}
                                             <button 
                                                 onClick={() => { setActiveAction('TOP_UP'); setActionResult(null); }}
-                                                className={`p-6 rounded-3xl border-2 text-left transition-all group ${activeAction === 'TOP_UP' ? 'border-emerald-600 bg-emerald-50/50 ring-4 ring-emerald-600/5' : 'border-slate-100 hover:border-slate-200'}`}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'TOP_UP' ? 'border-emerald-600 bg-emerald-50/50' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
-                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 transition-colors ${activeAction === 'TOP_UP' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'TOP_UP' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
                                                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
                                                 </div>
-                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1 tracking-tight">Add Credits</h3>
-                                                <p className="text-xs text-slate-400 font-medium">Deposit funds.</p>
+                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Deposit</h3>
+                                                <p className="text-xs text-slate-400">Add credit to wallet.</p>
                                             </button>
 
-                                            {/* Pay Option */}
+                                            {/* Pay (with Voucher) */}
                                             <button 
                                                 onClick={() => { setActiveAction('PAY'); setActionResult(null); }}
-                                                className={`p-6 rounded-3xl border-2 text-left transition-all group ${activeAction === 'PAY' ? 'border-amber-600 bg-amber-50/50 ring-4 ring-amber-600/5' : 'border-slate-100 hover:border-slate-200'}`}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'PAY' ? 'border-amber-600 bg-amber-50/50' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
-                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 transition-colors ${activeAction === 'PAY' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'PAY' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
                                                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
                                                 </div>
-                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1 tracking-tight">Kiosk Sale</h3>
-                                                <p className="text-xs text-slate-400 font-medium">Charge card.</p>
+                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Kiosk Sale</h3>
+                                                <p className="text-xs text-slate-400">Charge card (Vouchers OK).</p>
+                                            </button>
+
+                                            {/* Loan - New Button */}
+                                            <button 
+                                                onClick={() => { setActiveAction('LOAN'); setActionResult(null); }}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'LOAN' ? 'border-purple-600 bg-purple-50/50' : 'border-slate-100 hover:border-slate-200'}`}
+                                            >
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'LOAN' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+                                                </div>
+                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Issue Loan</h3>
+                                                <p className="text-xs text-slate-400">Advance credit to wallet.</p>
+                                            </button>
+
+                                            {/* Delete Card */}
+                                            <button 
+                                                onClick={() => { setActiveAction('DELETE'); setActionResult(null); }}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'DELETE' ? 'border-red-600 bg-red-50/50' : 'border-slate-100 hover:border-slate-200'}`}
+                                            >
+                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'DELETE' ? 'bg-red-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                                </div>
+                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Delete Customer</h3>
+                                                <p className="text-xs text-slate-400">Permanently wipe card.</p>
                                             </button>
                                         </div>
                                     </div>
 
-                                    {/* Action Configuration & Results Box */}
+                                    {/* Box 2: Configuration / Results */}
                                     {activeAction && (
-                                        <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border-4 border-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                                        <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border-4 border-slate-900 transition-all animate-in fade-in slide-in-from-bottom-4 duration-300">
                                             <div className="flex items-center justify-between mb-8">
-                                                <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em]">2. Configuration / Result</h2>
-                                                <button onClick={() => { setActiveAction(null); setActionResult(null); }} className="text-red-500 font-black text-[10px] uppercase">Cancel Action</button>
+                                                <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em]">2. Terminal Output</h2>
+                                                <button onClick={() => { setActiveAction(null); setActionResult(null); }} className="text-red-500 font-black text-[10px] uppercase">Close</button>
                                             </div>
 
-                                            {/* Result Display Overlays */}
                                             {actionResult ? (
                                                 <div className="space-y-6">
                                                     {actionResult.status === 'error' && (
-                                                        <div className="bg-red-50 border-2 border-red-200 p-6 rounded-3xl text-center">
-                                                            <div className="w-12 h-12 bg-red-500 rounded-full flex items-center justify-center mx-auto mb-4 text-white">
-                                                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                                        <div className="bg-red-50 border-2 border-red-200 p-8 rounded-3xl text-center">
+                                                            <div className="w-16 h-16 bg-red-500 rounded-full flex items-center justify-center mx-auto mb-4 text-white">
+                                                                <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12"/></svg>
                                                             </div>
-                                                            <p className="text-red-800 font-black uppercase text-xs tracking-widest mb-2">Error Occurred</p>
+                                                            <h4 className="text-red-900 font-black uppercase text-sm mb-1 tracking-widest">Operation Failed</h4>
                                                             <p className="text-red-600 font-bold leading-relaxed">{actionResult.message}</p>
                                                             <button 
                                                                 onClick={() => setActionResult(null)}
-                                                                className="mt-6 px-6 py-2 bg-red-600 text-white rounded-full text-[10px] font-black uppercase tracking-widest active:scale-95"
+                                                                className="mt-6 px-8 py-3 bg-red-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95"
                                                             >
                                                                 Dismiss & Try Again
                                                             </button>
@@ -315,6 +396,11 @@
                                                                 <p className="text-xs font-bold text-emerald-700">{actionResult.data.customerEmail}</p>
                                                                 <p className="text-[10px] font-mono text-emerald-600 opacity-60">Serial: {actionResult.data.serial}</p>
                                                             </div>
+                                                            {(actionResult.data.loanBalance || 0) > 0 && (
+                                                                <div className="mt-4 inline-block bg-red-100 px-4 py-2 rounded-xl border border-red-200">
+                                                                    <p className="text-xs font-black text-red-600 uppercase">Outstanding Loan: ${(actionResult.data.loanBalance).toFixed(2)}</p>
+                                                                </div>
+                                                            )}
                                                             <button 
                                                                 onClick={() => setActionResult(null)}
                                                                 className="mt-8 px-8 py-3 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 shadow-lg shadow-emerald-200"
@@ -333,7 +419,7 @@
                                                             <p className="text-emerald-600 font-bold">{actionResult.message}</p>
                                                             <button 
                                                                 onClick={() => setActionResult(null)}
-                                                                className="mt-6 px-6 py-2 bg-emerald-600 text-white rounded-full text-[10px] font-black uppercase tracking-widest active:scale-95"
+                                                                className="mt-6 px-8 py-3 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95"
                                                             >
                                                                 Dismiss
                                                             </button>
@@ -342,13 +428,13 @@
 
                                                     {actionResult.status === 'processing' && (
                                                         <div className="py-12 text-center">
-                                                            <div className="w-10 h-10 border-4 border-slate-200 border-t-slate-900 rounded-full animate-spin mx-auto mb-4"></div>
+                                                            <div className="w-12 h-12 border-4 border-slate-200 border-t-slate-900 rounded-full animate-spin mx-auto mb-4"></div>
                                                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{actionResult.message}</p>
                                                         </div>
                                                     )}
                                                 </div>
                                             ) : (
-                                                /* Configuration Inputs (Visible when no result is present) */
+                                                /* Configuration Inputs */
                                                 <div className="space-y-6">
                                                     {activeAction === 'REGISTER' && (
                                                         <div className="space-y-4">
@@ -363,19 +449,71 @@
                                                         </div>
                                                     )}
 
-                                                    {(activeAction === 'TOP_UP' || activeAction === 'PAY') && (
+                                                    {(activeAction === 'TOP_UP' || activeAction === 'LOAN') && (
                                                         <div className="space-y-4">
-                                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Amount</label>
+                                                            {activeAction === 'TOP_UP' && (
+                                                                <div className="mb-6">
+                                                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2 block mb-2">Deposit Mode</label>
+                                                                    <div className="flex space-x-2">
+                                                                        <button onClick={() => setTopUpMode('NORMAL')} className={`flex-1 py-3 rounded-xl font-bold text-xs uppercase transition-all ${topUpMode === 'NORMAL' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>Normal Top Up</button>
+                                                                        <button onClick={() => setTopUpMode('PAY_LOAN')} className={`flex-1 py-3 rounded-xl font-bold text-xs uppercase transition-all ${topUpMode === 'PAY_LOAN' ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>Pay Loans</button>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            {activeAction === 'LOAN' && (
+                                                                <div className="bg-purple-50 p-4 rounded-2xl border border-purple-100 mb-4">
+                                                                    <p className="text-xs font-bold text-purple-800 uppercase tracking-tight">Policy Notice</p>
+                                                                    <p className="text-[10px] text-purple-600 font-medium mt-1">Maximum outstanding loan limit is $5.00 per customer.</p>
+                                                                </div>
+                                                            )}
+                                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Transaction Amount</label>
                                                             <div className="relative">
                                                                 <span className="absolute left-6 top-1/2 -translate-y-1/2 text-3xl font-black text-slate-300">$</span>
                                                                 <input 
                                                                     type="number" 
                                                                     value={amount}
                                                                     onChange={(e) => setAmount(e.target.value)}
-                                                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-12 pr-6 py-6 font-black text-4xl text-slate-800 outline-none focus:border-slate-900 transition-all shadow-inner"
+                                                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-12 pr-6 py-5 font-black text-4xl text-slate-800 outline-none focus:border-slate-900 transition-all shadow-inner"
                                                                     placeholder="0.00"
                                                                 />
                                                             </div>
+                                                        </div>
+                                                    )}
+
+                                                    {activeAction === 'PAY' && (
+                                                        <div className="space-y-4">
+                                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Sale Amount</label>
+                                                            <div className="relative">
+                                                                <span className="absolute left-6 top-1/2 -translate-y-1/2 text-3xl font-black text-slate-300">$</span>
+                                                                <input 
+                                                                    type="number" 
+                                                                    value={amount}
+                                                                    onChange={(e) => setAmount(e.target.value)}
+                                                                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-12 pr-6 py-5 font-black text-4xl text-slate-800 outline-none focus:border-slate-900 transition-all shadow-inner"
+                                                                    placeholder="0.00"
+                                                                />
+                                                            </div>
+                                                            
+                                                            <label className="text-[10px] font-black text-emerald-500 uppercase tracking-widest ml-2 block mt-6">Apply Voucher (Optional)</label>
+                                                            <div className="relative">
+                                                                <span className="absolute left-6 top-1/2 -translate-y-1/2 text-xl font-black text-emerald-300">-$</span>
+                                                                <input 
+                                                                    type="number" 
+                                                                    value={voucherAmount}
+                                                                    onChange={(e) => setVoucherAmount(e.target.value)}
+                                                                    className="w-full bg-emerald-50/50 border border-emerald-200 rounded-2xl pl-12 pr-6 py-4 font-bold text-2xl text-emerald-700 outline-none focus:border-emerald-500 transition-all shadow-inner"
+                                                                    placeholder="0.00"
+                                                                />
+                                                            </div>
+
+                                                            {amount && (
+                                                                <div className="text-right mt-2 pr-2">
+                                                                    <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Final Charge: </span>
+                                                                    <span className="text-slate-900 font-black text-xl">
+                                                                        ${Math.max(0, parseFloat(amount) - (parseFloat(voucherAmount) || 0)).toFixed(2)}
+                                                                    </span>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     )}
 
@@ -389,19 +527,45 @@
                                                         </div>
                                                     )}
 
-                                                    {/* Waiting for Tap Prompt */}
-                                                    <div className="mt-8 p-6 bg-slate-900 rounded-3xl text-white flex items-center justify-between shadow-xl">
-                                                        <div className="flex items-center space-x-4">
-                                                            <div className="w-10 h-10 rounded-full border-2 border-dashed border-white/30 flex items-center justify-center animate-spin-slow">
-                                                                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                                                    {activeAction === 'DELETE' && (
+                                                        <div className="py-6 text-center">
+                                                            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                                                                <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
                                                             </div>
-                                                            <div>
-                                                                <p className="font-black uppercase text-[10px] tracking-widest text-white/50">Instruction</p>
-                                                                <p className="text-xs font-bold uppercase tracking-tighter">Tap Physical Card Now</p>
+                                                            <p className="font-black text-red-600 uppercase tracking-tight">Warning: Irreversible Action</p>
+                                                            <p className="text-xs text-slate-500 mt-2 font-medium max-w-xs mx-auto">This will permanently delete the customer's wallet balance and system records.</p>
+                                                        </div>
+                                                    )}
+
+                                                    {/* Waiting for Tap Prompt */}
+                                                    {activeAction !== 'BALANCE' && activeAction !== 'DELETE' && (
+                                                        <div className="mt-8 p-6 bg-slate-900 rounded-3xl text-white flex items-center justify-between shadow-xl">
+                                                            <div className="flex items-center space-x-4">
+                                                                <div className="w-10 h-10 rounded-full border-2 border-dashed border-white/30 flex items-center justify-center animate-spin-slow">
+                                                                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                                                                </div>
+                                                                <div>
+                                                                    <p className="font-black uppercase text-[10px] tracking-widest text-white/50">Instruction</p>
+                                                                    <p className="text-xs font-bold uppercase tracking-tighter">Tap Physical Card Now</p>
+                                                                </div>
+                                                            </div>
+                                                            <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></div>
+                                                        </div>
+                                                    )}
+                                                    
+                                                    {activeAction === 'DELETE' && (
+                                                        <div className="mt-8 p-6 bg-red-900 rounded-3xl text-white flex items-center justify-between shadow-xl border border-red-800">
+                                                            <div className="flex items-center space-x-4">
+                                                                <div className="w-10 h-10 rounded-full bg-red-800 flex items-center justify-center animate-pulse">
+                                                                    <svg className="w-5 h-5 text-red-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                                                                </div>
+                                                                <div>
+                                                                    <p className="font-black uppercase text-[10px] tracking-widest text-red-300">Confirm Deletion</p>
+                                                                    <p className="text-xs font-bold uppercase tracking-tighter">Tap Target Card Now</p>
+                                                                </div>
                                                             </div>
                                                         </div>
-                                                        <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></div>
-                                                    </div>
+                                                    )}
                                                 </div>
                                             )}
                                         </div>
