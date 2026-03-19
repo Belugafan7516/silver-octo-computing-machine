@@ -218,13 +218,19 @@
                                     const loanSnap = await getDoc(tagRef);
                                     if (!loanSnap.exists()) throw new Error("Card not registered.");
                                     
-                                    const existingLoan = loanSnap.data().loanBalance || 0;
-                                    if (existingLoan + currentAmount > 5) {
-                                        throw new Error(`Limit Exceeded. Max loan is $5.00. Current loan: $${existingLoan.toFixed(2)}`);
+                                    const loanData = loanSnap.data();
+                                    const existingLoan = loanData.loanBalance || 0;
+                                    
+                                    // VIP status check for loan limits ($10 max for VIP, $5 max for standard)
+                                    const isVIP = loanData.isMember && new Date(loanData.membershipExpiry) > new Date();
+                                    const maxLoanLimit = isVIP ? 10 : 5;
+                                    
+                                    if (existingLoan + currentAmount > maxLoanLimit) {
+                                        throw new Error(`Limit Exceeded. Max loan is $${maxLoanLimit.toFixed(2)}${isVIP ? ' for VIPs' : ''}. Current loan: $${existingLoan.toFixed(2)}`);
                                     }
                                     
                                     const newLoanBalance = existingLoan + currentAmount;
-                                    const newBalanceWithLoan = (loanSnap.data().balance || 0) + currentAmount;
+                                    const newBalanceWithLoan = (loanData.balance || 0) + currentAmount;
                                     
                                     await updateDoc(tagRef, { balance: newBalanceWithLoan, loanBalance: newLoanBalance });
                                     
@@ -628,7 +634,7 @@
                                                             {activeAction === 'LOAN' && (
                                                                 <div className="bg-purple-50 p-4 rounded-2xl border border-purple-100 mb-4">
                                                                     <p className="text-xs font-bold text-purple-800 uppercase tracking-tight">Policy Notice</p>
-                                                                    <p className="text-[10px] text-purple-600 font-medium mt-1">Maximum outstanding loan limit is $5.00 per customer.</p>
+                                                                    <p className="text-[10px] text-purple-600 font-medium mt-1">Maximum outstanding loan limit is $5.00 ($10.00 for VIP Members).</p>
                                                                 </div>
                                                             )}
                                                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Transaction Amount</label>
