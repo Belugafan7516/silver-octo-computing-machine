@@ -52,45 +52,39 @@
             const [isScanning, setIsScanning] = useState(false);
             
             // Workflow State
-            const [activeAction, setActiveAction] = useState(null); // 'REGISTER'|'PAY'|'TOP_UP'|'DELETE'|'BALANCE'|'LOAN'|'TRANSFER'
+            const [activeAction, setActiveAction] = useState(null); // 'REGISTER' | 'PAY' | 'TOP_UP' | 'DELETE' | 'BALANCE' | 'LOAN'
             const [amount, setAmount] = useState('');
             const [voucherAmount, setVoucherAmount] = useState('');
+            const [tipAmount, setTipAmount] = useState('');
             const [customerEmail, setCustomerEmail] = useState('');
             const [actionResult, setActionResult] = useState(null); 
-            const [topUpMode, setTopUpMode] = useState('NORMAL'); 
-            
-            // Transfer Workflow States
-            const [transferState, setTransferState] = useState('AWAITING_SOURCE');
-            const [transferData, setTransferData] = useState(null);
+            const [topUpMode, setTopUpMode] = useState('NORMAL'); // 'NORMAL' | 'PAY_LOAN'
 
             // Refs for NFC Event Listener
             const actionRef = useRef(null);
             const amountRef = useRef(null);
             const voucherAmountRef = useRef(null);
+            const tipAmountRef = useRef(null);
             const customerEmailRef = useRef(null);
             const topUpModeRef = useRef(null);
-            const transferStateRef = useRef(null);
-            const transferDataRef = useRef(null);
 
             useEffect(() => {
                 actionRef.current = activeAction;
                 amountRef.current = amount;
                 voucherAmountRef.current = voucherAmount;
+                tipAmountRef.current = tipAmount;
                 customerEmailRef.current = customerEmail;
                 topUpModeRef.current = topUpMode;
-                transferStateRef.current = transferState;
-                transferDataRef.current = transferData;
-
+                
                 if (!activeAction) {
                     setActionResult(null);
                     setAmount('');
                     setVoucherAmount('');
+                    setTipAmount('');
                     setCustomerEmail('');
                     setTopUpMode('NORMAL');
-                    setTransferState('AWAITING_SOURCE');
-                    setTransferData(null);
                 }
-            }, [activeAction, amount, voucherAmount, customerEmail, topUpMode, transferState, transferData]);
+            }, [activeAction, amount, voucherAmount, tipAmount, customerEmail, topUpMode]);
 
             useEffect(() => {
                 const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -119,90 +113,21 @@
                         const action = actionRef.current;
                         const currentAmount = parseFloat(amountRef.current);
                         const currentVoucher = parseFloat(voucherAmountRef.current) || 0;
+                        const currentTip = parseFloat(tipAmountRef.current) || 0;
                         const currentEmail = customerEmailRef.current;
                         const currentTopUpMode = topUpModeRef.current;
-                        const currentTransferState = transferStateRef.current;
-                        const currentTransferData = transferDataRef.current;
 
                         if (!action) {
                             addLog(`Card Detected: ${serialNumber}. Choose action first.`, 'info');
                             return;
                         }
 
-                        // Don't show generic processing for Transfer intermediate steps
-                        if (action !== 'TRANSFER' || currentTransferState === 'AWAITING_DESTINATION') {
-                            setActionResult({ status: 'processing', message: 'Processing NFC Tag...' });
-                        }
+                        setActionResult({ status: 'processing', message: 'Processing NFC Tag...' });
 
                         try {
                             const tagRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', serialNumber);
                             
                             switch (action) {
-                                case 'TRANSFER':
-                                    if (currentTransferState === 'AWAITING_SOURCE') {
-                                        const sourceSnap = await getDoc(tagRef);
-                                        if (!sourceSnap.exists()) throw new Error("Source card not registered.");
-                                        
-                                        const data = sourceSnap.data();
-                                        
-                                        // 1. Physically erase the OLD card
-                                        await ndef.write({
-                                            records: [{ recordType: "text", data: "STATUS: ERASED" }]
-                                        });
-                                        
-                                        // 2. Save data to memory state for Step 2
-                                        setTransferData({
-                                            ...data,
-                                            oldSerial: serialNumber
-                                        });
-                                        
-                                        // Advance state to step 2
-                                        setTransferState('AWAITING_DESTINATION');
-                                        setActionResult(null); // Clear processing message to show step 2 UI
-                                        addLog(`Old card (${serialNumber}) erased and buffered.`, 'success');
-
-                                    } else if (currentTransferState === 'AWAITING_DESTINATION') {
-                                        if (serialNumber === currentTransferData.oldSerial) {
-                                            throw new Error("You tapped the erased card again! Please tap a NEW, blank card.");
-                                        }
-                                        
-                                        const destSnap = await getDoc(tagRef);
-                                        if (destSnap.exists()) {
-                                            throw new Error("Target card is already registered to someone else. Please use a blank card.");
-                                        }
-                                        
-                                        // 3. Generate completely new Internal ID
-                                        const newId = `PS-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-                                        
-                                        // 4. Write to NEW physical card
-                                        await ndef.write({
-                                            records: [
-                                                { recordType: "text", data: `ID: ${newId}` },
-                                                { recordType: "text", data: `Customer: ${currentTransferData.customerEmail}` }
-                                            ]
-                                        });
-                                        
-                                        // 5. Create new Firestore record
-                                        await setDoc(tagRef, {
-                                            balance: currentTransferData.balance || 0,
-                                            loanBalance: currentTransferData.loanBalance || 0,
-                                            customerEmail: currentTransferData.customerEmail,
-                                            internalId: newId,
-                                            registeredAt: new Date().toISOString()
-                                        });
-                                        
-                                        // 6. Safely delete the old stranded record now that data is successfully migrated
-                                        const oldDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'tags', currentTransferData.oldSerial);
-                                        await deleteDoc(oldDocRef);
-                                        
-                                        setActionResult({ status: 'success', message: `Transfer Complete! New ID: ${newId}` });
-                                        addLog(`Card transferred. Old wiped. New ID generated.`, 'success');
-                                        
-                                        setTransferState('AWAITING_SOURCE');
-                                        setTransferData(null);
-                                    }
-                                    break;
-
                                 case 'BALANCE':
                                     const balSnap = await getDoc(tagRef);
                                     if (balSnap.exists()) {
@@ -296,7 +221,7 @@
                                     if (!paySnap.exists()) throw new Error("Card not registered.");
                                     
                                     const currentBal = paySnap.data().balance;
-                                    const finalCharge = Math.max(0, currentAmount - currentVoucher);
+                                    const finalCharge = Math.max(0, currentAmount - currentVoucher) + currentTip;
                                     
                                     if (currentBal < finalCharge) throw new Error(`Insufficient credits. Need $${finalCharge.toFixed(2)}`);
                                     
@@ -304,12 +229,14 @@
                                     await updateDoc(tagRef, { balance: newPayBalance });
                                     
                                     let payMsg = `Charge Success. Remaining: $${newPayBalance.toFixed(2)}`;
-                                    if (currentVoucher > 0) payMsg += ` (Voucher used: -$${currentVoucher.toFixed(2)})`;
+                                    if (currentVoucher > 0) payMsg += ` | Voucher: -$${currentVoucher.toFixed(2)}`;
+                                    if (currentTip > 0) payMsg += ` | Tip: +$${currentTip.toFixed(2)}`;
                                     
                                     setActionResult({ status: 'success', message: payMsg });
-                                    addLog(`Payment: -$${finalCharge.toFixed(2)}`, 'success');
+                                    addLog(`Payment Complete: -$${finalCharge.toFixed(2)}`, 'success');
                                     setAmount('');
                                     setVoucherAmount('');
+                                    setTipAmount('');
                                     break;
 
                                 case 'DELETE':
@@ -344,6 +271,7 @@
                 }
             };
 
+            // UI Render Logic
             if (user) {
                 return (
                     <div className="min-h-screen bg-slate-50 p-4 lg:p-8">
@@ -371,7 +299,7 @@
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                             {/* Register */}
                                             <button 
-                                                onClick={() => { setActiveAction('REGISTER'); setActionResult(null); }}
+                                                onClick={() => setActiveAction('REGISTER')}
                                                 className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'REGISTER' ? 'border-blue-600 bg-blue-50/50' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
                                                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'REGISTER' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
@@ -383,7 +311,7 @@
 
                                             {/* Balance */}
                                             <button 
-                                                onClick={() => { setActiveAction('BALANCE'); setActionResult(null); }}
+                                                onClick={() => setActiveAction('BALANCE')}
                                                 className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'BALANCE' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
                                                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'BALANCE' ? 'bg-white text-slate-900' : 'bg-slate-100 text-slate-400'}`}>
@@ -395,7 +323,7 @@
 
                                             {/* Top Up */}
                                             <button 
-                                                onClick={() => { setActiveAction('TOP_UP'); setActionResult(null); }}
+                                                onClick={() => setActiveAction('TOP_UP')}
                                                 className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'TOP_UP' ? 'border-emerald-600 bg-emerald-50/50' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
                                                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'TOP_UP' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
@@ -405,21 +333,21 @@
                                                 <p className="text-xs text-slate-400">Add credit to wallet.</p>
                                             </button>
 
-                                            {/* Pay (with Voucher) */}
+                                            {/* Pay (Sale) */}
                                             <button 
-                                                onClick={() => { setActiveAction('PAY'); setActionResult(null); }}
+                                                onClick={() => setActiveAction('PAY')}
                                                 className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'PAY' ? 'border-amber-600 bg-amber-50/50' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
                                                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'PAY' ? 'bg-amber-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
                                                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
                                                 </div>
                                                 <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Kiosk Sale</h3>
-                                                <p className="text-xs text-slate-400">Charge card (Vouchers OK).</p>
+                                                <p className="text-xs text-slate-400">Charge card (Tips & Vouchers).</p>
                                             </button>
 
                                             {/* Loan */}
                                             <button 
-                                                onClick={() => { setActiveAction('LOAN'); setActionResult(null); }}
+                                                onClick={() => setActiveAction('LOAN')}
                                                 className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'LOAN' ? 'border-purple-600 bg-purple-50/50' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
                                                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'LOAN' ? 'bg-purple-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
@@ -429,28 +357,16 @@
                                                 <p className="text-xs text-slate-400">Advance credit to wallet.</p>
                                             </button>
 
-                                            {/* Transfer Card - NEW BUTTON */}
-                                            <button 
-                                                onClick={() => { setActiveAction('TRANSFER'); setActionResult(null); }}
-                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'TRANSFER' ? 'border-cyan-600 bg-cyan-50/50' : 'border-slate-100 hover:border-slate-200'}`}
-                                            >
-                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'TRANSFER' ? 'bg-cyan-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
-                                                </div>
-                                                <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Transfer Card</h3>
-                                                <p className="text-xs text-slate-400">Migrate data to new card.</p>
-                                            </button>
-
                                             {/* Delete Card */}
                                             <button 
-                                                onClick={() => { setActiveAction('DELETE'); setActionResult(null); }}
-                                                className={`p-6 rounded-3xl border-2 text-left transition-all sm:col-span-2 ${activeAction === 'DELETE' ? 'border-red-600 bg-red-50/50 ring-4 ring-red-600/5' : 'border-slate-100 hover:border-slate-200'}`}
+                                                onClick={() => setActiveAction('DELETE')}
+                                                className={`p-6 rounded-3xl border-2 text-left transition-all ${activeAction === 'DELETE' ? 'border-red-600 bg-red-50/50' : 'border-slate-100 hover:border-slate-200'}`}
                                             >
                                                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-4 ${activeAction === 'DELETE' ? 'bg-red-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
                                                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                                 </div>
                                                 <h3 className="font-black text-slate-900 uppercase text-sm mb-1">Delete Customer</h3>
-                                                <p className="text-xs text-slate-400">Permanently wipe card and cloud records.</p>
+                                                <p className="text-xs text-slate-400">Permanently wipe card.</p>
                                             </button>
                                         </div>
                                     </div>
@@ -460,11 +376,7 @@
                                         <div className="bg-white rounded-[2.5rem] p-8 shadow-xl border-4 border-slate-900 transition-all animate-in fade-in slide-in-from-bottom-4 duration-300">
                                             <div className="flex items-center justify-between mb-8">
                                                 <h2 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em]">2. Terminal Output</h2>
-                                                
-                                                {/* Only allow closing if we are NOT halfway through a transfer */}
-                                                {!(activeAction === 'TRANSFER' && transferState === 'AWAITING_DESTINATION') && (
-                                                    <button onClick={() => { setActiveAction(null); setActionResult(null); }} className="text-red-500 font-black text-[10px] uppercase">Close</button>
-                                                )}
+                                                <button onClick={() => setActiveAction(null)} className="text-red-500 font-black text-[10px] uppercase">Close</button>
                                             </div>
 
                                             {actionResult ? (
@@ -476,10 +388,7 @@
                                                             </div>
                                                             <h4 className="text-red-900 font-black uppercase text-sm mb-1 tracking-widest">Operation Failed</h4>
                                                             <p className="text-red-600 font-bold leading-relaxed">{actionResult.message}</p>
-                                                            <button 
-                                                                onClick={() => setActionResult(null)}
-                                                                className="mt-6 px-8 py-3 bg-red-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95"
-                                                            >
+                                                            <button onClick={() => setActionResult(null)} className="mt-6 px-8 py-3 bg-red-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95">
                                                                 Dismiss & Try Again
                                                             </button>
                                                         </div>
@@ -491,17 +400,14 @@
                                                             <p className="text-6xl font-black text-emerald-800 mb-4">${actionResult.data.balance.toFixed(2)}</p>
                                                             <div className="space-y-1">
                                                                 <p className="text-xs font-bold text-emerald-700">{actionResult.data.customerEmail}</p>
-                                                                <p className="text-[10px] font-mono text-emerald-600 opacity-60">ID: {actionResult.data.internalId}</p>
+                                                                <p className="text-[10px] font-mono text-emerald-600 opacity-60">Serial: {actionResult.data.serial}</p>
                                                             </div>
                                                             {(actionResult.data.loanBalance || 0) > 0 && (
                                                                 <div className="mt-4 inline-block bg-red-100 px-4 py-2 rounded-xl border border-red-200">
                                                                     <p className="text-xs font-black text-red-600 uppercase">Outstanding Loan: ${(actionResult.data.loanBalance).toFixed(2)}</p>
                                                                 </div>
                                                             )}
-                                                            <button 
-                                                                onClick={() => setActionResult(null)}
-                                                                className="mt-8 px-8 py-3 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 shadow-lg shadow-emerald-200"
-                                                            >
+                                                            <button onClick={() => setActionResult(null)} className="mt-8 px-8 py-3 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95 shadow-lg shadow-emerald-200">
                                                                 Clear Result
                                                             </button>
                                                         </div>
@@ -514,10 +420,7 @@
                                                             </div>
                                                             <p className="text-emerald-800 font-black uppercase text-xs tracking-widest mb-1">Success</p>
                                                             <p className="text-emerald-600 font-bold">{actionResult.message}</p>
-                                                            <button 
-                                                                onClick={() => setActionResult(null)}
-                                                                className="mt-6 px-8 py-3 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95"
-                                                            >
+                                                            <button onClick={() => setActionResult(null)} className="mt-6 px-8 py-3 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest active:scale-95">
                                                                 Dismiss
                                                             </button>
                                                         </div>
@@ -533,34 +436,6 @@
                                             ) : (
                                                 /* Configuration Inputs */
                                                 <div className="space-y-6">
-                                                    
-                                                    {/* TRANSFER CARD CUSTOM UI */}
-                                                    {activeAction === 'TRANSFER' && (
-                                                        <div className="py-4 text-center">
-                                                            {transferState === 'AWAITING_SOURCE' ? (
-                                                                <div>
-                                                                    <div className="w-16 h-16 bg-cyan-50 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
-                                                                        <svg className="w-8 h-8 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
-                                                                    </div>
-                                                                    <p className="font-black text-cyan-600 uppercase tracking-tight text-lg">Step 1: Erase Old Card</p>
-                                                                    <p className="text-xs text-slate-500 mt-2 font-medium max-w-xs mx-auto">Tap the customer's CURRENT card. This will safely buffer their data and wipe the physical card.</p>
-                                                                </div>
-                                                            ) : (
-                                                                <div className="border-2 border-dashed border-blue-200 bg-blue-50 p-6 rounded-3xl">
-                                                                    <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 animate-bounce shadow-lg shadow-blue-200">
-                                                                        <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
-                                                                    </div>
-                                                                    <p className="font-black text-blue-800 uppercase tracking-tight text-lg">Step 2: Write New Card</p>
-                                                                    <p className="text-xs text-blue-600 mt-2 font-bold mb-6">Tap a completely BLANK card to finalize transfer.</p>
-                                                                    <div className="bg-white rounded-xl p-4 inline-block shadow-sm border border-blue-100">
-                                                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Migrating Account</p>
-                                                                        <p className="text-sm font-black text-slate-800 mt-1">{transferData?.customerEmail}</p>
-                                                                    </div>
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    )}
-
                                                     {activeAction === 'REGISTER' && (
                                                         <div className="space-y-4">
                                                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Customer Email</label>
@@ -607,7 +482,7 @@
 
                                                     {activeAction === 'PAY' && (
                                                         <div className="space-y-4">
-                                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Sale Amount</label>
+                                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Base Sale Amount</label>
                                                             <div className="relative">
                                                                 <span className="absolute left-6 top-1/2 -translate-y-1/2 text-3xl font-black text-slate-300">$</span>
                                                                 <input 
@@ -619,24 +494,47 @@
                                                                 />
                                                             </div>
                                                             
-                                                            <label className="text-[10px] font-black text-emerald-500 uppercase tracking-widest ml-2 block mt-6">Apply Voucher (Optional)</label>
-                                                            <div className="relative">
-                                                                <span className="absolute left-6 top-1/2 -translate-y-1/2 text-xl font-black text-emerald-300">-$</span>
-                                                                <input 
-                                                                    type="number" 
-                                                                    value={voucherAmount}
-                                                                    onChange={(e) => setVoucherAmount(e.target.value)}
-                                                                    className="w-full bg-emerald-50/50 border border-emerald-200 rounded-2xl pl-12 pr-6 py-4 font-bold text-2xl text-emerald-700 outline-none focus:border-emerald-500 transition-all shadow-inner"
-                                                                    placeholder="0.00"
-                                                                />
+                                                            <div className="grid grid-cols-2 gap-4 mt-6">
+                                                                <div>
+                                                                    <label className="text-[10px] font-black text-emerald-500 uppercase tracking-widest ml-2 block mb-2">Voucher (Optional)</label>
+                                                                    <div className="relative">
+                                                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-lg font-black text-emerald-300">-$</span>
+                                                                        <input 
+                                                                            type="number" 
+                                                                            value={voucherAmount}
+                                                                            onChange={(e) => setVoucherAmount(e.target.value)}
+                                                                            className="w-full bg-emerald-50/50 border border-emerald-200 rounded-xl pl-10 pr-4 py-3 font-bold text-xl text-emerald-700 outline-none focus:border-emerald-500 transition-all shadow-inner"
+                                                                            placeholder="0.00"
+                                                                        />
+                                                                    </div>
+                                                                </div>
+
+                                                                <div>
+                                                                    <label className="text-[10px] font-black text-blue-500 uppercase tracking-widest ml-2 block mb-2">Add Tip (Optional)</label>
+                                                                    <div className="relative">
+                                                                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-lg font-black text-blue-300">+$</span>
+                                                                        <input 
+                                                                            type="number" 
+                                                                            value={tipAmount}
+                                                                            onChange={(e) => setTipAmount(e.target.value)}
+                                                                            className="w-full bg-blue-50/50 border border-blue-200 rounded-xl pl-10 pr-4 py-3 font-bold text-xl text-blue-700 outline-none focus:border-blue-500 transition-all shadow-inner"
+                                                                            placeholder="0.00"
+                                                                        />
+                                                                    </div>
+                                                                </div>
                                                             </div>
 
                                                             {amount && (
-                                                                <div className="text-right mt-2 pr-2">
-                                                                    <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Final Charge: </span>
-                                                                    <span className="text-slate-900 font-black text-xl">
-                                                                        ${Math.max(0, parseFloat(amount) - (parseFloat(voucherAmount) || 0)).toFixed(2)}
+                                                                <div className="mt-6 p-5 bg-slate-100 rounded-2xl border border-slate-200 text-right">
+                                                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Final Amount to Charge</span>
+                                                                    <span className="text-slate-900 font-black text-3xl block">
+                                                                        ${(Math.max(0, parseFloat(amount) - (parseFloat(voucherAmount) || 0)) + (parseFloat(tipAmount) || 0)).toFixed(2)}
                                                                     </span>
+                                                                    <div className="text-[10px] text-slate-500 font-mono mt-2 space-x-2">
+                                                                        <span>Base: ${parseFloat(amount).toFixed(2) || '0.00'}</span>
+                                                                        {(parseFloat(voucherAmount) > 0) && <span className="text-emerald-600">| Voucher: -${parseFloat(voucherAmount).toFixed(2)}</span>}
+                                                                        {(parseFloat(tipAmount) > 0) && <span className="text-blue-600">| Tip: +${parseFloat(tipAmount).toFixed(2)}</span>}
+                                                                    </div>
                                                                 </div>
                                                             )}
                                                         </div>
@@ -662,8 +560,8 @@
                                                         </div>
                                                     )}
 
-                                                    {/* Generic Waiting for Tap Prompt (Hides during explicit steps like Transfer) */}
-                                                    {activeAction !== 'BALANCE' && activeAction !== 'DELETE' && activeAction !== 'TRANSFER' && (
+                                                    {/* Waiting for Tap Prompt */}
+                                                    {activeAction !== 'BALANCE' && activeAction !== 'DELETE' && (
                                                         <div className="mt-8 p-6 bg-slate-900 rounded-3xl text-white flex items-center justify-between shadow-xl">
                                                             <div className="flex items-center space-x-4">
                                                                 <div className="w-10 h-10 rounded-full border-2 border-dashed border-white/30 flex items-center justify-center animate-spin-slow">
